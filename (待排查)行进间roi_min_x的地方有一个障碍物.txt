@@ -1,0 +1,595 @@
+
+
+（!!!!!!!!!当我把x小于 （车身半长+外扩的）的区域去掉，这个就没了。原来的话，这个障碍物占3cell。里面有800+个点
+可能由于这个是个 直角拐角，判断的有问题！！！！）-》问题有出现了，猜测失败，Cluster id: 10 : Center(0.95, -0.35, -1.40), 由 3 个cell组成, 总point_num: 862
+
+可能是由于AnalyzeVerticalOccupancy函数的最小高度obstacle_top_height_min_near设置过小
+
+
+
+
+----------------------
+[2026-07-15 10:20:10.572][1784082010572]Loop Start
+Transform + Filter : 1 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1944, 无效cell数量: 3736
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.40
+[GroundReference] 36/71 columns have ground cells, 地面高度参考范围: [-1.429, -1.354], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49823, Ground points: 26489, Obstacle points: 23334 
+[VoxelOccupancy v2] vertical: 33, obstacle: 25, depressed: 541 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+[ClusterObstacle] total clusters: 4 (filtered >= 3 cells)
+ ***********
+Cluster id: 3: Center(1.7, -1.55, -1.2186), 
+Cluster id: 6: Center(0.95, -0.35, -1.40683), 
+Cluster id: 8: Center(4.5, 1.85, -1.12761), 
+Cluster id: 12: Center(3.75, 2.15, -1.15631), 
+may丢失, id = 9999, loss_count = 7 
+	 [与0匹配上] 当前跟踪id = 10000，distance = 0.100 
+	 [与2匹配上] 当前跟踪id = 10003，distance = 0.100 
+ [与3匹配上] 当前跟踪id = 10004，distance = 0.307 大于 0.2
+(待定)new_track id = 10005, age =0; (平移)[0.000000, 0.000000, 0.000000]
+Track id: 9999: Center(1.88, -3.38, -1.31), age=15
+Track id: 10000: Center(1.80, -1.55, -1.22), age=22
+Track id: 10003: Center(4.62, 1.85, -1.15), age=1
+Track id: 10004: Center(3.75, 2.15, -1.16), age=1
+Track id: 10005: Center(0.95, -0.35, -1.41), age=0
+s_iPacketNum = 163, 388
+s_iPacketNum = 162, 387
+接收数据耗时 124 ms, 坐标转换耗时 3 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(576)** ms
+----------------------
+[2026-07-15 10:20:11.024][1784082011024]Loop Start
+Transform + Filter : 1 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1917, 无效cell数量: 3763
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.40
+[GroundReference] 36/71 columns have ground cells, 地面高度参考范围: [-1.431, -1.348], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49718, Ground points: 26319, Obstacle points: 23399 
+[VoxelOccupancy v2] vertical: 39, obstacle: 17, depressed: 528 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+ ***********
+[ClusterObstacle] total clusters: 1 (filtered >= 3 cells)
+Cluster id: 4: Center(1.65, -1.55, -1.21183), 
+may丢失, id = 9999, loss_count = 8 
+	 [与0匹配上] 当前跟踪id = 10000，distance = 0.150 
+may丢失, id = 10003, loss_count = 1 
+may丢失, id = 10004, loss_count = 1 
+may丢失, id = 10005, loss_count = 1 
+Track id: 9999: Center(1.88, -3.38, -1.31), age=15
+Track id: 10000: Center(1.80, -1.55, -1.22), age=23
+Track id: 10003: Center(4.62, 1.85, -1.15), age=1
+Track id: 10004: Center(3.75, 2.15, -1.16), age=1
+Track id: 10005: Center(0.95, -0.35, -1.41), age=0
+s_iPacketNum = 163, 388
+接收数据耗时 0 ms, 坐标转换耗时 2 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(51)** ms
+----------------------
+[2026-07-15 10:20:11.075][1784082011075]Loop Start
+Transform + Filter : 0 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1924, 无效cell数量: 3756
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.40
+[GroundReference] 36/71 columns have ground cells, 地面高度参考范围: [-1.430, -1.347], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49621, Ground points: 26422, Obstacle points: 23199 
+[VoxelOccupancy v2] vertical: 42, obstacle: 23, depressed: 516 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+ ***********
+[ClusterObstacle] total clusters: 2 (filtered >= 3 cells)
+Cluster id: 2: Center(1.95, -3.05, -1.64172), 
+Cluster id: 7: Center(1.55, -1.55, -1.21461), 
+ [与0匹配上] 当前跟踪id = 9999，distance = 0.340 大于 0.2
+ [与1匹配上] 当前跟踪id = 10000，distance = 0.250 大于 0.2
+may丢失, id = 10003, loss_count = 2 
+may丢失, id = 10004, loss_count = 2 
+may丢失, id = 10005, loss_count = 2 
+Track id: 9999: Center(1.95, -3.05, -1.64), age=16
+Track id: 10000: Center(1.55, -1.55, -1.21), age=24
+Track id: 10003: Center(4.62, 1.85, -1.15), age=1
+Track id: 10004: Center(3.75, 2.15, -1.16), age=1
+Track id: 10005: Center(0.95, -0.35, -1.41), age=0
+接收数据耗时 0 ms, 坐标转换耗时 0 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(33)** ms
+----------------------
+[2026-07-15 10:20:11.108][1784082011108]Loop Start
+Transform + Filter : 0 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1919, 无效cell数量: 3761
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.40
+[GroundReference] 36/71 columns have ground cells, 地面高度参考范围: [-1.430, -1.342], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49699, Ground points: 25990, Obstacle points: 23709 
+[VoxelOccupancy v2] vertical: 42, obstacle: 25, depressed: 500 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+[ClusterObstacle] total clusters: 2 (filtered >= 3 cells)
+ ***********
+Cluster id: 6: Center(1.5, -1.55, -1.22981), 
+Cluster id: 15: Center(3.55, 2.15, -1.13566), 
+may丢失, id = 9999, loss_count = 1 
+	 [与0匹配上] 当前跟踪id = 10000，distance = 0.050 
+may丢失, id = 10003, loss_count = 3 
+ [与1匹配上] 当前跟踪id = 10004，distance = 0.200 大于 0.2
+may丢失, id = 10005, loss_count = 3 
+Track id: 9999: Center(1.95, -3.05, -1.64), age=16
+Track id: 10000: Center(1.55, -1.55, -1.21), age=25
+Track id: 10003: Center(4.62, 1.85, -1.15), age=1
+Track id: 10004: Center(3.55, 2.15, -1.14), age=2
+Track id: 10005: Center(0.95, -0.35, -1.41), age=0
+接收数据耗时 0 ms, 坐标转换耗时 0 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(34)** ms
+s_iPacketNum = 162, 387
+----------------------
+[2026-07-15 10:20:11.232][1784082011232]Loop Start
+Transform + Filter : 1 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1897, 无效cell数量: 3783
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.30
+[GroundReference] 35/71 columns have ground cells, 地面高度参考范围: [-1.428, -1.335], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49695, Ground points: 26112, Obstacle points: 23583 
+[VoxelOccupancy v2] vertical: 36, obstacle: 29, depressed: 468 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+ ***********
+[ClusterObstacle] total clusters: 4 (filtered >= 3 cells)
+Cluster id: 3: Center(3.8, -2.8, -1.59487), 
+Cluster id: 4: Center(3.7, -1.6, -1.11829), 
+Cluster id: 5: Center(1.45, -1.55, -1.21165), 
+Cluster id: 15: Center(3.45, 2.35, -1.1425), 
+may丢失, id = 9999, loss_count = 2 
+	 [与2匹配上] 当前跟踪id = 10000，distance = 0.100 
+may丢失, id = 10003, loss_count = 4 
+ [与3匹配上] 当前跟踪id = 10004，distance = 0.224 大于 0.2
+may丢失, id = 10005, loss_count = 4 
+(待定)new_track id = 10006, age =0; (平移)[0.000000, 0.000000, 0.000000]
+(待定)new_track id = 10007, age =0; (平移)[0.000000, 0.000000, 0.000000]
+Track id: 9999: Center(1.95, -3.05, -1.64), age=16
+Track id: 10000: Center(1.55, -1.55, -1.21), age=26
+Track id: 10003: Center(4.62, 1.85, -1.15), age=1
+Track id: 10004: Center(3.45, 2.35, -1.14), age=3
+Track id: 10005: Center(0.95, -0.35, -1.41), age=0
+Track id: 10006: Center(3.82, -2.82, -1.59), age=0
+Track id: 10007: Center(3.72, -1.62, -1.12), age=0
+接收数据耗时 89 ms, 坐标转换耗时 3 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(161)** ms
+s_iPacketNum = 163, 388
+----------------------
+[2026-07-15 10:20:11.399][1784082011399]Loop Start
+Transform + Filter : 1 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1883, 无效cell数量: 3797
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.80
+[GroundReference] 40/71 columns have ground cells, 地面高度参考范围: [-1.428, -1.337], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49863, Ground points: 26742, Obstacle points: 23121 
+[VoxelOccupancy v2] vertical: 42, obstacle: 27, depressed: 414 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+ ***********
+[ClusterObstacle] total clusters: 3 (filtered >= 3 cells)
+Cluster id: 2: Center(1.75, -3, -1.62803), 
+Cluster id: 6: Center(1.3, -1.6, -1.24536), 
+Cluster id: 10: Center(0.95, -0.35, -1.40236), 
+ [与0匹配上] 当前跟踪id = 9999，distance = 0.201 大于 0.2
+ [与1匹配上] 当前跟踪id = 10000，distance = 0.251 大于 0.2
+may丢失, id = 10003, loss_count = 5 
+may丢失, id = 10004, loss_count = 1 
+	 [与2匹配上] 当前跟踪id = 10005，distance = 0.000 
+may丢失, id = 10006, loss_count = 1 
+may丢失, id = 10007, loss_count = 1 
+Track id: 9999: Center(1.75, -3.03, -1.63), age=17
+Track id: 10000: Center(1.30, -1.58, -1.25), age=27
+Track id: 10003: Center(4.62, 1.85, -1.15), age=1
+Track id: 10004: Center(3.45, 2.35, -1.14), age=3
+Track id: 10005: Center(0.95, -0.35, -1.41), age=1
+Track id: 10006: Center(3.82, -2.82, -1.59), age=0
+Track id: 10007: Center(3.72, -1.62, -1.12), age=0
+接收数据耗时 94 ms, 坐标转换耗时 3 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(166)** ms
+s_iPacketNum = 162, 387
+----------------------
+[2026-07-15 10:20:11.564][1784082011564]Loop Start
+Transform + Filter : 1 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1898, 无效cell数量: 3782
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.30
+[GroundReference] 35/71 columns have ground cells, 地面高度参考范围: [-1.426, -1.322], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49799, Ground points: 25861, Obstacle points: 23938 
+[VoxelOccupancy v2] vertical: 29, obstacle: 26, depressed: 452 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+ ***********
+[ClusterObstacle] total clusters: 1 (filtered >= 3 cells)
+Cluster id: 7: Center(1.2, -1.6, -1.25), 
+may丢失, id = 9999, loss_count = 1 
+	 [与0匹配上] 当前跟踪id = 10000，distance = 0.100 
+may丢失, id = 10003, loss_count = 6 
+may丢失, id = 10004, loss_count = 2 
+may丢失, id = 10005, loss_count = 1 
+may丢失, id = 10006, loss_count = 2 
+may丢失, id = 10007, loss_count = 2 
+Track id: 9999: Center(1.75, -3.03, -1.63), age=17
+Track id: 10000: Center(1.30, -1.58, -1.25), age=28
+Track id: 10003: Center(4.62, 1.85, -1.15), age=1
+Track id: 10004: Center(3.45, 2.35, -1.14), age=3
+Track id: 10005: Center(0.95, -0.35, -1.41), age=1
+Track id: 10006: Center(3.82, -2.82, -1.59), age=0
+Track id: 10007: Center(3.72, -1.62, -1.12), age=0
+接收数据耗时 93 ms, 坐标转换耗时 3 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(163)** ms
+s_iPacketNum = 163, 388
+----------------------
+[2026-07-15 10:20:11.728][1784082011728]Loop Start
+Transform + Filter : 1 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1890, 无效cell数量: 3790
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 5.00
+[GroundReference] 42/71 columns have ground cells, 地面高度参考范围: [-1.426, -1.322], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49845, Ground points: 26787, Obstacle points: 23058 
+[VoxelOccupancy v2] vertical: 39, obstacle: 26, depressed: 395 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+ ***********
+[ClusterObstacle] total clusters: 2 (filtered >= 3 cells)
+Cluster id: 7: Center(1.25, -1.55, -1.24787), 
+Cluster id: 12: Center(4.05, 1.75, -1.26016), 
+may丢失, id = 9999, loss_count = 2 
+	 [与0匹配上] 当前跟踪id = 10000，distance = 0.056 
+ [与1匹配上] 当前跟踪id = 10003，distance = 0.575 大于 0.2
+may丢失, id = 10004, loss_count = 3 
+may丢失, id = 10005, loss_count = 2 
+may丢失, id = 10006, loss_count = 3 
+may丢失, id = 10007, loss_count = 3 
+Track id: 9999: Center(1.75, -3.03, -1.63), age=17
+Track id: 10000: Center(1.30, -1.58, -1.25), age=29
+Track id: 10003: Center(4.05, 1.75, -1.26), age=2
+Track id: 10004: Center(3.45, 2.35, -1.14), age=3
+Track id: 10005: Center(0.95, -0.35, -1.41), age=1
+Track id: 10006: Center(3.82, -2.82, -1.59), age=0
+Track id: 10007: Center(3.72, -1.62, -1.12), age=0
+接收数据耗时 93 ms, 坐标转换耗时 3 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(165)** ms
+s_iPacketNum = 162, 387
+----------------------
+[2026-07-15 10:20:11.894][1784082011894]Loop Start
+Transform + Filter : 1 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1871, 无效cell数量: 3809
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.80
+[GroundReference] 40/71 columns have ground cells, 地面高度参考范围: [-1.422, -1.324], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49844, Ground points: 26726, Obstacle points: 23118 
+[VoxelOccupancy v2] vertical: 41, obstacle: 28, depressed: 395 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+ ***********
+[ClusterObstacle] total clusters: 3 (filtered >= 3 cells)
+Cluster id: 7: Center(1.15, -1.55, -1.26076), 
+Cluster id: 17: Center(6.95, 1.85, -1.04442), 
+Cluster id: 18: Center(3.15, 2.25, -1.14282), 
+may丢失, id = 9999, loss_count = 3 
+	 [与0匹配上] 当前跟踪id = 10000，distance = 0.152 
+may丢失, id = 10003, loss_count = 1 
+ [与2匹配上] 当前跟踪id = 10004，distance = 0.316 大于 0.2
+may丢失, id = 10005, loss_count = 3 
+may丢失, id = 10006, loss_count = 4 
+may丢失, id = 10007, loss_count = 4 
+(待定)new_track id = 10008, age =0; (平移)[0.000000, 0.000000, 0.000000]
+Track id: 9999: Center(1.75, -3.03, -1.63), age=17
+Track id: 10000: Center(1.30, -1.58, -1.25), age=30
+Track id: 10003: Center(4.05, 1.75, -1.26), age=2
+Track id: 10004: Center(3.15, 2.25, -1.14), age=4
+Track id: 10005: Center(0.95, -0.35, -1.41), age=1
+Track id: 10006: Center(3.82, -2.82, -1.59), age=0
+Track id: 10007: Center(3.72, -1.62, -1.12), age=0
+Track id: 10008: Center(6.95, 1.85, -1.04), age=0
+s_iPacketNum = 163, 388
+s_iPacketNum = 162, 387
+s_iPacketNum = 163, 388
+s_iPacketNum = 162, 387
+接收数据耗时 93 ms, 坐标转换耗时 3 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(765)** ms
+----------------------
+[2026-07-15 10:20:12.566][1784082012566]Loop Start
+Transform + Filter : 0 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1862, 无效cell数量: 3818
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.30
+[GroundReference] 35/71 columns have ground cells, 地面高度参考范围: [-1.421, -1.313], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49832, Ground points: 26761, Obstacle points: 23071 
+ ***********
+Cluster id: 1: Center(1.45, -3.05, -1.36147), 
+[VoxelOccupancy v2] vertical: 43, obstacle: 20, depressed: 414 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+[ClusterObstacle] total clusters: 1 (filtered >= 3 cells)
+ [与0匹配上] 当前跟踪id = 9999，distance = 0.301 大于 0.2
+may丢失, id = 10000, loss_count = 1 
+may丢失, id = 10003, loss_count = 2 
+may丢失, id = 10004, loss_count = 1 
+may丢失, id = 10005, loss_count = 4 
+may丢失, id = 10006, loss_count = 5 
+may丢失, id = 10007, loss_count = 5 
+may丢失, id = 10008, loss_count = 1 
+Track id: 9999: Center(1.45, -3.05, -1.36), age=18
+Track id: 10000: Center(1.30, -1.58, -1.25), age=30
+Track id: 10003: Center(4.05, 1.75, -1.26), age=2
+Track id: 10004: Center(3.15, 2.25, -1.14), age=4
+Track id: 10005: Center(0.95, -0.35, -1.41), age=1
+Track id: 10006: Center(3.82, -2.82, -1.59), age=0
+Track id: 10007: Center(3.72, -1.62, -1.12), age=0
+Track id: 10008: Center(6.95, 1.85, -1.04), age=0
+接收数据耗时 0 ms, 坐标转换耗时 1 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(47)** ms
+----------------------
+[2026-07-15 10:20:12.614][1784082012614]Loop Start
+Transform + Filter : 0 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1856, 无效cell数量: 3824
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.20
+[GroundReference] 34/71 columns have ground cells, 地面高度参考范围: [-1.419, -1.303], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49799, Ground points: 26274, Obstacle points: 23525 
+ ***********
+Cluster id: 3: Center(1.35, -3.05, -1.38162), 
+Cluster id: 6: Center(1.05, -1.55, -1.26666), 
+Cluster id: 8: Center(5.05, -1.3, -1.0537), 
+[VoxelOccupancy v2] vertical: 44, obstacle: 21, depressed: 463 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+[ClusterObstacle] total clusters: 3 (filtered >= 3 cells)
+	 [与0匹配上] 当前跟踪id = 9999，distance = 0.100 
+ [与1匹配上] 当前跟踪id = 10000，distance = 0.251 大于 0.2
+may丢失, id = 10003, loss_count = 3 
+may丢失, id = 10004, loss_count = 2 
+may丢失, id = 10005, loss_count = 5 
+may丢失, id = 10006, loss_count = 6 
+may丢失, id = 10007, loss_count = 6 
+may丢失, id = 10008, loss_count = 2 
+(待定)new_track id = 10009, age =0; (平移)[0.000000, 0.000000, 0.000000]
+Track id: 9999: Center(1.45, -3.05, -1.36), age=19
+Track id: 10000: Center(1.05, -1.55, -1.27), age=31
+Track id: 10003: Center(4.05, 1.75, -1.26), age=2
+Track id: 10004: Center(3.15, 2.25, -1.14), age=4
+Track id: 10005: Center(0.95, -0.35, -1.41), age=1
+Track id: 10006: Center(3.82, -2.82, -1.59), age=0
+Track id: 10007: Center(3.72, -1.62, -1.12), age=0
+Track id: 10008: Center(6.95, 1.85, -1.04), age=0
+Track id: 10009: Center(5.05, -1.30, -1.05), age=0
+接收数据耗时 0 ms, 坐标转换耗时 1 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(39)** ms
+----------------------
+[2026-07-15 10:20:12.654][1784082012654]Loop Start
+Transform + Filter : 0 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1862, 无效cell数量: 3818
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.20
+[GroundReference] 34/71 columns have ground cells, 地面高度参考范围: [-1.419, -1.309], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49676, Ground points: 26489, Obstacle points: 23187 
+ ***********
+Cluster id: 2: Center(1.25, -3.05, -1.35753), 
+Cluster id: 14: Center(2.95, 2, -1.18285), 
+[VoxelOccupancy v2] vertical: 45, obstacle: 24, depressed: 462 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+[ClusterObstacle] total clusters: 2 (filtered >= 3 cells)
+ [与0匹配上] 当前跟踪id = 9999，distance = 0.200 大于 0.2
+may丢失, id = 10000, loss_count = 1 
+may丢失, id = 10003, loss_count = 4 
+ [与1匹配上] 当前跟踪id = 10004，distance = 0.320 大于 0.2
+may丢失, id = 10005, loss_count = 6 
+may丢失, id = 10006, loss_count = 7 
+may丢失, id = 10007, loss_count = 7 
+may丢失, id = 10008, loss_count = 3 
+may丢失, id = 10009, loss_count = 1 
+Track id: 9999: Center(1.25, -3.05, -1.36), age=20
+Track id: 10000: Center(1.05, -1.55, -1.27), age=31
+Track id: 10003: Center(4.05, 1.75, -1.26), age=2
+Track id: 10004: Center(2.95, 2.00, -1.18), age=5
+Track id: 10005: Center(0.95, -0.35, -1.41), age=1
+Track id: 10006: Center(3.82, -2.82, -1.59), age=0
+Track id: 10007: Center(3.72, -1.62, -1.12), age=0
+Track id: 10008: Center(6.95, 1.85, -1.04), age=0
+Track id: 10009: Center(5.05, -1.30, -1.05), age=0
+接收数据耗时 0 ms, 坐标转换耗时 0 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(34)** ms
+----------------------
+[2026-07-15 10:20:12.688][1784082012688]Loop Start
+Transform + Filter : 0 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1865, 无效cell数量: 3815
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.30
+[GroundReference] 35/71 columns have ground cells, 地面高度参考范围: [-1.420, -1.315], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49565, Ground points: 26689, Obstacle points: 22876 
+ ***********
+Cluster id: 2: Center(1.15, -3.1, -1.34887), 
+Cluster id: 13: Center(0.95, -0.35, -1.39725), 
+Cluster id: 16: Center(2.85, 2.25, -1.23892), 
+[VoxelOccupancy v2] vertical: 36, obstacle: 27, depressed: 435 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+[ClusterObstacle] total clusters: 3 (filtered >= 3 cells)
+	 [与0匹配上] 当前跟踪id = 9999，distance = 0.127 
+may丢失, id = 10000, loss_count = 2 
+may丢失, id = 10003, loss_count = 5 
+ [与2匹配上] 当前跟踪id = 10004，distance = 0.269 大于 0.2
+	 [与1匹配上] 当前跟踪id = 10005，distance = 0.000 
+may丢失, id = 10006, loss_count = 8 
+may丢失, id = 10007, loss_count = 8 
+may丢失, id = 10008, loss_count = 4 
+may丢失, id = 10009, loss_count = 2 
+Track id: 9999: Center(1.25, -3.05, -1.36), age=21
+Track id: 10000: Center(1.05, -1.55, -1.27), age=31
+Track id: 10003: Center(4.05, 1.75, -1.26), age=2
+Track id: 10004: Center(2.85, 2.25, -1.24), age=6
+Track id: 10005: Center(0.95, -0.35, -1.41), age=2
+Track id: 10006: Center(3.82, -2.82, -1.59), age=0
+Track id: 10007: Center(3.72, -1.62, -1.12), age=0
+Track id: 10008: Center(6.95, 1.85, -1.04), age=0
+Track id: 10009: Center(5.05, -1.30, -1.05), age=0
+s_iPacketNum = 163, 388
+接收数据耗时 0 ms, 坐标转换耗时 0 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(40)** ms
+----------------------
+[2026-07-15 10:20:12.730][1784082012730]Loop Start
+Transform + Filter : 0 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1843, 无效cell数量: 3837
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.20
+[GroundReference] 34/71 columns have ground cells, 地面高度参考范围: [-1.419, -1.308], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49324, Ground points: 27464, Obstacle points: 21860 
+ ***********
+[VoxelOccupancy v2] vertical: 41, obstacle: 26, depressed: 427 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+Cluster id: 2: Center(1.1, -3.1, -1.39038), 
+[ClusterObstacle] total clusters: 4 (filtered >= 3 cells)
+Cluster id: 5: Center(1.15, -1.9, -1.27647), 
+Cluster id: 9: Center(0.95, -0.35, -1.39237), 
+Cluster id: 13: Center(2.75, 2.35, -1.17227), 
+	 [与0匹配上] 当前跟踪id = 9999，distance = 0.149 
+ [与1匹配上] 当前跟踪id = 10000，distance = 0.334 大于 0.2
+may丢失, id = 10003, loss_count = 6 
+	 [与3匹配上] 当前跟踪id = 10004，distance = 0.141 
+	 [与2匹配上] 当前跟踪id = 10005，distance = 0.000 
+may丢失, id = 10006, loss_count = 9 
+may丢失, id = 10007, loss_count = 9 
+may丢失, id = 10008, loss_count = 5 
+may丢失, id = 10009, loss_count = 3 
+Track id: 9999: Center(1.25, -3.05, -1.36), age=22
+Track id: 10000: Center(1.13, -1.87, -1.28), age=32
+Track id: 10003: Center(4.05, 1.75, -1.26), age=2
+Track id: 10004: Center(2.85, 2.25, -1.24), age=7
+Track id: 10005: Center(0.95, -0.35, -1.41), age=3
+Track id: 10006: Center(3.82, -2.82, -1.59), age=0
+Track id: 10007: Center(3.72, -1.62, -1.12), age=0
+Track id: 10008: Center(6.95, 1.85, -1.04), age=0
+Track id: 10009: Center(5.05, -1.30, -1.05), age=0
+接收数据耗时 0 ms, 坐标转换耗时 0 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(37)** ms
+s_iPacketNum = 162, 387
+----------------------
+[2026-07-15 10:20:12.875][1784082012875]Loop Start
+Transform + Filter : 1 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1844, 无效cell数量: 3836
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.20
+[GroundReference] 34/71 columns have ground cells, 地面高度参考范围: [-1.420, -1.308], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49384, Ground points: 26944, Obstacle points: 22440 
+[VoxelOccupancy v2] vertical: 47, obstacle: 21, depressed: 418 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+ ***********
+[ClusterObstacle] total clusters: 1 (filtered >= 3 cells)
+Cluster id: 2: Center(1.05, -3.1, -1.69311), 
+	 [与0匹配上] 当前跟踪id = 9999，distance = 0.190 
+may丢失, id = 10000, loss_count = 1 
+may丢失, id = 10003, loss_count = 7 
+may丢失, id = 10004, loss_count = 1 
+may丢失, id = 10005, loss_count = 1 
+may丢失, id = 10006, loss_count = 10 
+may丢失, id = 10007, loss_count = 10 
+may丢失, id = 10008, loss_count = 6 
+may丢失, id = 10009, loss_count = 4 
+Track id: 9999: Center(1.25, -3.05, -1.36), age=23
+Track id: 10000: Center(1.13, -1.87, -1.28), age=32
+Track id: 10003: Center(4.05, 1.75, -1.26), age=2
+Track id: 10004: Center(2.85, 2.25, -1.24), age=7
+Track id: 10005: Center(0.95, -0.35, -1.41), age=3
+Track id: 10006: Center(3.82, -2.82, -1.59), age=0
+Track id: 10007: Center(3.72, -1.62, -1.12), age=0
+Track id: 10008: Center(6.95, 1.85, -1.04), age=0
+Track id: 10009: Center(5.05, -1.30, -1.05), age=0
+接收数据耗时 107 ms, 坐标转换耗时 3 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(174)** ms
+s_iPacketNum = 163, 388
+----------------------
+[2026-07-15 10:20:13.040][1784082013040]Loop Start
+Transform + Filter : 2 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1865, 无效cell数量: 3815
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.30
+[GroundReference] 35/71 columns have ground cells, 地面高度参考范围: [-1.419, -1.314], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49323, Ground points: 26304, Obstacle points: 23019 
+[VoxelOccupancy v2] vertical: 36, obstacle: 26, depressed: 391 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+[ClusterObstacle] total clusters: 1 (filtered >= 3 cells)
+ ***********
+Cluster id: 1: Center(1, -3.1, -1.69907), 
+ [与0匹配上] 当前跟踪id = 9999，distance = 0.255 大于 0.2
+may丢失, id = 10000, loss_count = 2 
+may丢失, id = 10003, loss_count = 8 
+may丢失, id = 10004, loss_count = 2 
+may丢失, id = 10005, loss_count = 2 
+may丢失, id = 10006, loss_count = 11 
+may丢失, id = 10007, loss_count = 11 
+may丢失, id = 10008, loss_count = 7 
+may丢失, id = 10009, loss_count = 5 
+Track id: 9999: Center(1.00, -3.10, -1.70), age=24
+Track id: 10000: Center(1.13, -1.87, -1.28), age=32
+Track id: 10003: Center(4.05, 1.75, -1.26), age=2
+Track id: 10004: Center(2.85, 2.25, -1.24), age=7
+Track id: 10005: Center(0.95, -0.35, -1.41), age=3
+Track id: 10008: Center(6.95, 1.85, -1.04), age=0
+Track id: 10009: Center(5.05, -1.30, -1.05), age=0
+接收数据耗时 98 ms, 坐标转换耗时 4 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(147)** ms
+s_iPacketNum = 162, 387
+----------------------
+[2026-07-15 10:20:13.199][1784082013199]Loop Start
+Transform + Filter : 0 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1882, 无效cell数量: 3798
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.30
+[GroundReference] 35/71 columns have ground cells, 地面高度参考范围: [-1.419, -1.315], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49415, Ground points: 26126, Obstacle points: 23289 
+ ***********
+Cluster id: 0: Center(1, -3.1, -1.69887), 
+[VoxelOccupancy v2] vertical: 43, obstacle: 17, depressed: 406 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+[ClusterObstacle] total clusters: 1 (filtered >= 3 cells)
+	 [与0匹配上] 当前跟踪id = 9999，distance = 0.024 
+may丢失, id = 10000, loss_count = 3 
+may丢失, id = 10003, loss_count = 9 
+may丢失, id = 10004, loss_count = 3 
+may丢失, id = 10005, loss_count = 3 
+may丢失, id = 10008, loss_count = 8 
+may丢失, id = 10009, loss_count = 6 
+Track id: 9999: Center(1.00, -3.10, -1.70), age=25
+Track id: 10000: Center(1.13, -1.87, -1.28), age=32
+Track id: 10003: Center(4.05, 1.75, -1.26), age=2
+Track id: 10004: Center(2.85, 2.25, -1.24), age=7
+Track id: 10005: Center(0.95, -0.35, -1.41), age=3
+Track id: 10008: Center(6.95, 1.85, -1.04), age=0
+Track id: 10009: Center(5.05, -1.30, -1.05), age=0
+s_iPacketNum = 163, 388
+s_iPacketNum = 162, 387
+接收数据耗时 110 ms, 坐标转换耗时 0 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(460)** ms
+----------------------
+[2026-07-15 10:20:13.550][1784082013550]Loop Start
+Transform + Filter : 0 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1807, 无效cell数量: 3873
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.30
+[GroundReference] 35/71 columns have ground cells, 地面高度参考范围: [-1.420, -1.321], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49361, Ground points: 26314, Obstacle points: 23047 
+ ***********
+[VoxelOccupancy v2] vertical: 43, obstacle: 17, depressed: 391 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+[ClusterObstacle] total clusters: 0 (filtered >= 3 cells)
+Track id: 9999: Center(1.00, -3.10, -1.70), age=25
+Track id: 10000: Center(1.13, -1.87, -1.28), age=32
+Track id: 10003: Center(4.05, 1.75, -1.26), age=2
+Track id: 10004: Center(2.85, 2.25, -1.24), age=7
+Track id: 10005: Center(0.95, -0.35, -1.41), age=3
+Track id: 10008: Center(6.95, 1.85, -1.04), age=0
+Track id: 10009: Center(5.05, -1.30, -1.05), age=0
+接收数据耗时 0 ms, 坐标转换耗时 1 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(39)** ms
+----------------------
+[2026-07-15 10:20:13.590][1784082013590]Loop Start
+Transform + Filter : 0 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1820, 无效cell数量: 3860
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.30
+[GroundReference] 35/71 columns have ground cells, 地面高度参考范围: [-1.416, -1.323], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49432, Ground points: 26201, Obstacle points: 23231 
+ ***********
+[VoxelOccupancy v2] vertical: 52, obstacle: 7, depressed: 417 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+[ClusterObstacle] total clusters: 0 (filtered >= 3 cells)
+Track id: 9999: Center(1.00, -3.10, -1.70), age=25
+Track id: 10000: Center(1.13, -1.87, -1.28), age=32
+Track id: 10004: Center(2.85, 2.25, -1.24), age=7
+Track id: 10005: Center(0.95, -0.35, -1.41), age=3
+Track id: 10008: Center(6.95, 1.85, -1.04), age=0
+Track id: 10009: Center(5.05, -1.30, -1.05), age=0
+接收数据耗时 0 ms, 坐标转换耗时 1 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(42)** ms
+s_iPacketNum = 163, 388
+----------------------
+[2026-07-15 10:20:13.679][1784082013679]Loop Start
+Transform + Filter : 1 ms
+Elevation Grid: 80 rows (y, ±4.00m) × 71 cols (0.90, 8.00m), total cells: 5680
+要求cell中最低点数量: 1 ->有效cell数量: 1861, 无效cell数量: 3819
+选种子区域：第 0 排开始, 第 3 排结束 ; 对应距离：（0.90, 1.20)
+【GenerateGroundMask】ground cell size: 5680 -》rest cell size: 0 ; ground max X: 4.30
+[GroundReference] 35/71 columns have ground cells, 地面高度参考范围: [-1.418, -1.328], 主雷达安装高度fallback: -1.390
+@@@ 过滤后InputCloud: 49353, Ground points: 25799, Obstacle points: 23554 
+[VoxelOccupancy v2] vertical: 49, obstacle: 10, depressed: 407 (top_height range: near[0.05,0.40] far[0.10,0.50], boundary: 3.0m)
+ ***********
+[ClusterObstacle] total clusters: 0 (filtered >= 3 cells)
+Track id: 9999: Center(1.00, -3.10, -1.70), age=25
+Track id: 10000: Center(1.13, -1.87, -1.28), age=32
+Track id: 10004: Center(2.85, 2.25, -1.24), age=7
+Track id: 10005: Center(0.95, -0.35, -1.41), age=3
+Track id: 10009: Center(5.05, -1.30, -1.05), age=0
+接收数据耗时 47 ms, 坐标转换耗时 3 ms, APMF 耗时 0 ms, Total Ground Filter completed in **(106)** ms
+s_iPacketNum = 162, 387
+

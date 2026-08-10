@@ -1,0 +1,185 @@
+%YAML:1.0
+
+
+Lidar:
+  selfComputerIP: "192.168.86.70" #组播地址:224.0.0.3
+  groupIP: "224.0.0.3"
+  msopPort: 2368
+  difopPort: 2369
+  STlidarType: "RSEMX" # RSAIRY  RSEMX  RSHELIOS_16P
+  LSlidarType: "CH64w"
+  verticalUpperAngle: 15
+  verticalLowerAngle: -25
+  scanRings: 128
+  pathTolidarTransformConfig: 11 #0: 电脑E1小车 1: E1现场车 2:佛山T1 3:佛山现场T1 4:t05_right_shenzhen 5:t05_left_shenzhen 6:t05_right_hainan 7:t05_left_hainan #8:海南现场T05 9:海南现场E1 10:E1_right_hainan
+  
+Model:
+  onlineModel: 0
+  pcapRunningModel: 1
+  rs_pcapPath: "/home/zyl/pcap/T05/test_emx.pcap" #left
+  pcdRunningModel: 0
+  pcdPathTime: "1741331381727"
+  pcdPath: "/home/zyl/echiev_low_lidar_detection/log/init.pcd" #right_airy_firebottle  right_bottle log/init.pcd init-4m.pcd iii_开始位置不能识别到
+  savePcdReflection: 30
+  curbDetection: 1 # 边缘检测
+  commonGroundDetection: 1 # 地上车道线检测	
+  
+  openGroundViewer: 0 # 打开分割地面点的点云视图
+  openClusterViewer: 0 # 打开聚类的点云视图
+  
+  
+Viewer:
+  projectionModel: 1
+  savePictureModel: 1
+  
+  width: 1000
+  height: 1000 #600 #1000
+  scale: 100 #默认是50个像素1米
+  # 与点云坐标一致
+  x: 900  #550   #900
+  y: 500   #500  #500
+  # 整个窗口向右旋转90度
+  # x: 500
+  # y: 100
+  
+Pcd:
+ savePcd: 0
+
+Road:
+  # 左
+  leftXMin: -13
+  leftXMax: 0.0 # 固定值：0m
+  leftYMax: 30.0 # 向前
+  # 右
+  rightXMin: 0.0 # 固定值：0m
+  rightXMax: 13.0
+  rightYMax: 30.0 # 向前
+  # 高度过滤
+  heightLower: 1.0
+  heightUpper: 3.0
+  # 
+  isDetectionLeftRoad: 0
+  isDetectionRightRoad: 0
+
+
+GroundLane:
+  GL_heightLower: -0.6
+  GL_heightUpper: -0.5
+  GL_intensityLower: 20
+  GL_intensityUpper: 40
+
+GroundSegmentationFromAPMF:
+  maxWindowSize: 20
+  slope: 0.3
+  initialDistance: 0.5 # 0.5 0.08
+  maxDistance: 3.0 # 3.0 0.2
+  cellSize: 0.1
+  base: 3
+
+
+MapGroundFilter:
+  roi_x_min: 0.0
+  roi_x_max: 20.0 # 与代码GetDynamicHeightDiffThreshold和GetDynamicSlopeThreshold固定
+  roi_y_min: -4.0
+  roi_y_max: 4.0
+  grid_resolution: 0.1 #米制单位
+  slope_threshold: 0.35 #0.1对应5°；0.35对应19°
+  height_diff_threshold: 0.35 #0.20  #近处：容忍点云的较大高度跳变
+  min_points_per_cell: 1 # 有效 Grid 最少点数, 过滤噪点
+  #sensor_height: 1.1 #废除，直接读配置lidar
+  #
+  car_half_x: 0.8
+  car_half_y: 0.4
+  body_filter_x_threshold: 2.5 # 车身剔除：x > 此值保留（车头前方外扩）; 正值是外扩，负值是内缩
+  body_filter_y_threshold: 0.0 # 车身剔除：y > 此值保留（车身右侧外，y轴正方向→车左侧）; 正值是外扩，负值是内缩(不要内缩，影响过滤车身的)
+  #
+  obstacle_top_height_min_near: 0.10  # 近距离最小 top_height (m)
+  obstacle_top_height_max_near : 0.30   # 近距离最大 top_height (m)
+  obstacle_top_height_min_far : 0.05   # 中距离最小 top_height (m)
+  obstacle_top_height_max_far  : 0.40   # 中距离最大 top_height (m)
+  near_range_boundary          : 3.0    # 近/中距离分界 (m)
+
+GroundSegmentationFromSAC:
+  groundSegmentationThreshold: 0.01 #地面分割阈值
+  
+Clustering:
+  leftMinClusterThreshold: 30
+  leftMaxClusterThreshold: 200
+  leftPointsDistance: 5
+  rightMinClusterThreshold: 20
+  rightMaxClusterThreshold: 200
+  rightPointsDistance: 0.5
+  
+  
+HoughLinesP:
+  width: 500 #500 # 500
+  height: 600 #600 #700
+  scale: 50 #
+  # 与点云坐标一致
+  x: 600  #调它能设置窗口上下，与height有关 #550 #600
+  left_y: 500  #调它能设置窗口左右,与width有关 #400 # 450
+  right_y: 0  #100 #50
+  rho: 1 #累加器的距离分辨率；单位：像素
+  theta: 0.0174532 # π/180
+  threshold: 50
+  minLineLength: 50
+  maxLineGap: 10
+
+CurveFitting:
+  distinguishRoadSideThreshold: 0.0
+  
+RANSAC:
+  interations: 200
+  sigma: 0.5 #点到直线的距离 ax + by + c = 0
+  kMin: 0.0
+  kMax: 0.0
+  
+SlideWindow:
+  isRunningFilter: 0 #不滤波时必须为0 
+  slideWindowCount: 3 #3帧做一次滑窗滤波
+  
+UDP:
+  isUdpRecEnable: 1
+
+DebugViewer:
+  save_dir: "/home/zyl/echiev_low_lidar_detection/log/debug_viewer/"
+
+  HeightMap:
+    enable: 0
+    show: 0
+    save: 0
+
+  GroundMask:
+    enable: 1
+    show: 0
+    save: 1
+
+  Slope:
+    enable: 0
+    show: 0
+    save: 0
+
+  GroundReference:
+    enable: 0
+    show: 0
+    save: 0
+
+  ObstacleCandidate:
+    enable: 0
+    show: 0
+    save: 0
+
+  Cluster:
+    enable: 0
+    show: 0
+    save: 0
+
+  BoundingBox:
+    enable: 0
+    show: 0
+    save: 0
+
+  Overlay:
+    enable: 0
+    show: 0
+    save: 0
