@@ -6,18 +6,18 @@
 namespace Lidar_Low_Detection
 {
 
-// 选出左右两侧的最大簇
-auto getLargestCluster = [](const std::vector<PointCloud2Intensity::Ptr>& clusters) {
-    return *std::max_element(clusters.begin(), clusters.end(),
-                                [](const PointCloud2Intensity::Ptr& a, const PointCloud2Intensity::Ptr& b) {
-                                    return a->size() < b->size();
-                                });
-};
+// // 选出左右两侧的最大簇
+// auto getLargestCluster = [](const std::vector<PointCloud2Intensity::Ptr>& clusters) {
+//     return *std::max_element(clusters.begin(), clusters.end(),
+//                                 [](const PointCloud2Intensity::Ptr& a, const PointCloud2Intensity::Ptr& b) {
+//                                     return a->size() < b->size();
+//                                 });
+// };
 
 
-auto getCluster = [](const std::vector<PointCloud2Intensity::Ptr>& clusters){
-    return clusters[0];
-};
+// auto getCluster = [](const std::vector<PointCloud2Intensity::Ptr>& clusters){
+//     return clusters[0];
+// };
 
 
 CurveFitting::CurveFitting(const SELF_DEBUG_CONFIG & config)

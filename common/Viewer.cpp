@@ -1,5 +1,6 @@
 #include "Viewer.h"
-#include "core.hpp"
+
+#include <opencv2/core/core.hpp>
 
 namespace Lidar_Low_Detection
 {

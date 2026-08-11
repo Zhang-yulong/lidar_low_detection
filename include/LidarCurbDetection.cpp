@@ -1,6 +1,10 @@
 #include "LidarCurbDetection.h" 
-#include "core/matx.hpp"
-#include "core/types.hpp"
+// #include "core/matx.hpp"
+// #include "core/types.hpp"
+
+#include <opencv2/core/matx.hpp>
+#include <opencv2/core/types.hpp>
+
 #include "ulog_api.h"
 #include <boost/smart_ptr/make_shared_array.hpp>
 #include <cstddef>

@@ -39,8 +39,8 @@ INCLUDE_DIRECTORIES(
     ${3rdparty}/ulog/include
     ${3rdparty}/eigen/include/eigen3
     ${3rdparty}/opencv/opencv_3.3/include
-    ${3rdparty}/opencv/opencv_3.3/include/opencv
-    ${3rdparty}/opencv/opencv_3.3/include/opencv2
+    # ${3rdparty}/opencv/opencv_3.3/include/opencv #不需要
+    # ${3rdparty}/opencv/opencv_3.3/include/opencv2 #不需要，cpp或h文件中标准写法#include <opencv2/>
 
     # ${3rdparty}/vtk/vtk-6.3.0/release/include/vtk-6.3
     # ${3rdparty}/pcl/pcl-1.8.0/release/include/pcl-1.8
