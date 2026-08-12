@@ -36,17 +36,60 @@ float  g_fSpeed = 0.0;
 // ================================================================
 // 信号处理：SIGINT (Ctrl+C) 优雅退出
 // ================================================================
-std::atomic<bool> g_running(true);
-std::condition_variable g_cv;
+std::atomic<bool>* g_TerminateFlag = nullptr;  // 指向主线程中的标志
 
-void SignalHandler(int signo)
+static void SignalHandler(int Sig)
 {
-    if (signo == SIGINT)
+    switch (Sig)
     {
-        printf("\nSIGINT received\n");
-        g_running = false;
-        g_cv.notify_all();
+        case SIGINT:
+        case SIGTERM:
+        case SIGQUIT:
+        case SIGHUP:
+        {
+            printf("\nSignal %d received, shutting down...\n", Sig);
+            if (g_TerminateFlag)
+                g_TerminateFlag->store(true, std::memory_order_release);
+            break;
+        }
+        default:
+            // 忽略未处理的信号
+            break;
     }
+}
+
+static void* SignalThread(void* Arg)
+{
+	// 【关键修复】第一行就赋值，防止空指针解引用
+    g_TerminateFlag = static_cast<std::atomic<bool>*>(Arg);
+
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGINT);
+    sigaddset(&set, SIGTERM);
+    sigaddset(&set, SIGQUIT);
+    sigaddset(&set, SIGHUP);
+    // 注意：不要加 SIGKILL，它无法被捕获
+
+    int sig;
+    while (!g_TerminateFlag->load(std::memory_order_acquire))
+    {
+        int ret = sigwait(&set, &sig);
+        if (ret == 0)
+        {
+            SignalHandler(sig);
+        }
+        else
+        {
+            // sigwait 被信号中断（EINTR），重试
+            if (errno != EINTR)
+            {
+                perror("sigwait error");
+                break;
+            }
+        }
+    }
+    return nullptr;
 }
 
 
@@ -388,11 +431,13 @@ int main(int argc, char *argv[])
 	}
 	std::cout << "Yaml_Path = " << Yaml_Path << std::endl;
 
+	// 旧ulog
 	int iRet = ulog_init(LOG_CFG_FILE_PATH);
 	// std::cout<<"ulog iRet: " <<iRet<<std::endl; //读取成功是0
 	if(iRet){
 		LOG_RAW("**** 0 **** [Error] %s 加载失败\n", LOG_CFG_FILE_PATH);
 	}
+	// ulog_init(argc, argv); //新ulog
 	
 	
 	SELF_DEBUG_CONFIG strOpencvConfig;
@@ -409,6 +454,16 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
+	// 1. 设置信号屏蔽集
+	sigset_t sigset;
+	sigemptyset(&sigset);
+	sigaddset(&sigset, SIGINT);
+	sigaddset(&sigset, SIGTERM);
+	sigaddset(&sigset, SIGQUIT);
+	sigaddset(&sigset, SIGHUP);
+	pthread_sigmask(SIG_BLOCK, &sigset, nullptr);
+
+	
 	STR_ALL_LIDAR_CONFIG_INFO strAllLidarTransformInfo = GetAllTransformConfigInfo(strToMainLidarConfig, strToCarConfig);
 
    	// LeiShenDrive lsDrive(strOpencvConfig, strAllLidarTransformInfo);
@@ -419,8 +474,17 @@ int main(int argc, char *argv[])
 	stDriver.Init();
 	stDriver.Start();
 
-	// Viewer cvLaneView(strOpencvConfig);
+	// 【修复2】驱动启动后再创建信号线程
+    std::atomic<bool> TerminateFlag{false};
+    pthread_t sig_tid;
+    if (pthread_create(&sig_tid, nullptr, SignalThread, &TerminateFlag) != 0) {
+        perror("pthread_create SignalThread failed");
+        stDriver.Stop();
+        stDriver.Free();
+        return -1;
+    }
 
+	// Viewer cvLaneView(strOpencvConfig);
 
 	/*
 	if(strOpencvConfig.isUdpRecEnable == 1){
@@ -471,7 +535,7 @@ int main(int argc, char *argv[])
         PointCloud2Intensity::Ptr visObstacle(new PointCloud2Intensity);
         std::vector<TrackedObstacle> visTracks;
 
-        while (SpinGroundViewerOnce())
+        while (!TerminateFlag.load() && SpinGroundViewerOnce())
         {
             if (visBuf.Consume(visGround, visObstacle, visTracks))
             {
@@ -482,11 +546,14 @@ int main(int argc, char *argv[])
     else
     {
         // online 模式：无可视化，保持主线程存活
-        while (1)
+        while (!TerminateFlag.load())
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
     }
+
+	// 4. 等待信号线程退出
+	pthread_join(sig_tid, nullptr);
 
 	// lsDrive.Stop();
     // lsDrive.Free();

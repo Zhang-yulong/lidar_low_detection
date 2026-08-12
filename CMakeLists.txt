@@ -36,7 +36,7 @@ INCLUDE_DIRECTORIES(
 
     ${3rdparty}/comm/comm_2.6.2/include
     ${3rdparty}/libconfig/include
-    ${3rdparty}/ulog/include
+    ${3rdparty}/ulog-old/include
     ${3rdparty}/eigen/include/eigen3
     ${3rdparty}/opencv/opencv_3.3/include
     # ${3rdparty}/opencv/opencv_3.3/include/opencv #不需要
@@ -54,7 +54,7 @@ INCLUDE_DIRECTORIES(
 # LINK_DIRECTORIES("${3rdparty}/comm_2.7.1/lib")
 LINK_DIRECTORIES("${3rdparty}/comm/comm_2.6.2/lib")
 LINK_DIRECTORIES("${3rdparty}/libconfig/lib")
-LINK_DIRECTORIES("${3rdparty}/ulog/lib")
+LINK_DIRECTORIES("${3rdparty}/ulog-old/lib")
 LINK_DIRECTORIES("${3rdparty}/opencv/opencv_3.3/lib")
 LINK_LIBRARIES("${3rdparty}/opencv/opencv_3.3/lib/libopencv_core.so" )
 
