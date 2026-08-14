@@ -48,6 +48,8 @@ CFLAGS   := -O3 -Wall -fopenmp
 
 # 速腾驱动有使用pcap，但是ARM平台没有pcap的库
 CXXFLAGS += -DNO_USE_PCAP
+# ARM平台用的ulog地址
+CXXFLAGS += -DLOG_CFG_FILE_PATH=\"/etc/echiev/low_detection/ulog.cfg\"
 
 #----------------------------------------------------------------------------------
 # 5. 头文件包含路径 (-I)
@@ -61,7 +63,7 @@ INCLUDES := \
     -I$(ROOT)/driver \
     -I$(THIRDPARTY)/comm/comm_2.6.2/include \
     -I$(THIRDPARTY)/libconfig/include \
-    -I$(THIRDPARTY)/ulog/include \
+        -I$(THIRDPARTY)/ulog-old/include \
     -I$(THIRDPARTY)/eigen/include/eigen3 \
     -I$(THIRDPARTY)/opencv-hw/opencv/include \
     -I$(THIRDPARTY)/opencv-hw/opencv/include/opencv \
@@ -81,7 +83,7 @@ INCLUDES := \
 LDFLAGS := \
     -L$(THIRDPARTY)/comm/comm_2.6.2/lib \
     -L$(THIRDPARTY)/libconfig/lib \
-    -L$(THIRDPARTY)/ulog/lib \
+     -L$(THIRDPARTY)/ulog-old/lib \
     -L$(THIRDPARTY)/opencv-hw/opencv/lib \
     -L$(THIRDPARTY)/pcl/lib \
     -L$(THIRDPARTY)/vtk/lib \

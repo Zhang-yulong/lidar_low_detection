@@ -15,7 +15,7 @@ using namespace Lidar_Low_Detection;
 
 #define CvLane_MC_PORT 9139
 
-#define LOG_CFG_FILE_PATH "/home/zyl/echiev_low_lidar_detection/config/ulog.cfg"
+// #define LOG_CFG_FILE_PATH "/home/zyl/echiev_low_lidar_detection/config/ulog.cfg"
 // #define LOG_CFG_FILE_PATH "/etc/ulog/curb/config/ulog.cfg"
 // #define LOG_CFG_FILE_PATH "/etc/echiev/low_detection/ulog.cfg"
 

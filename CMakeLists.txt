@@ -70,14 +70,22 @@ SET(COMM ${3rdparty}/comm/comm_2.6.2/lib/libcomm.so)
 add_executable(low_detection src/main.cpp ${LS} ${SRC} ${COMMON})
 
 #方法二
+
 if(NOT ENABLE_PCAP)
-    target_compile_definitions(low_detection PRIVATE NO_USE_PCAP)
+    target_compile_definitions(low_detection PRIVATE 
+        NO_USE_PCAP
+    )
 endif()
+
+# 加上X86平台用的ulog地址
+target_compile_definitions(low_detection PRIVATE 
+    LOG_CFG_FILE_PATH="/home/zyl/echiev_low_lidar_detection/config/ulog.cfg"
+)
 
 # # 方法一============ pcap 编译开关（NO_USE_PCAP 是否不使用 pcap） ============
 # # input_pcap.hpp / input_pcap_jumbo.hpp 中 pcap 相关代码被 #ifndef NO_USE_PCAP 包裹。
 
-# # 默认 NO_USE_PCAP=ON  -> 不定义 NO_USE_PCAP，pcap 代码不会被正常编译。
+# # 默认 NO_USE_PCAP=ON  -> 定义 NO_USE_PCAP，pcap 代码不会被正常编译。
 # # 如需启动pcap    -> 将 NO_USE_PCAP 设为 OFF，
 # #                      会全局定义 NO_USE_PCAP，pcap 相关代码将被编译。
 # # 注意：pcap 库的链接请自行在 target_link_libraries 中处理。

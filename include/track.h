@@ -70,12 +70,12 @@ struct TrackedObstacle {
     std::unique_ptr<KalmanFilter2D> kf;
 
     // 新增：构造函数，用于初始化卡尔曼滤波器
-    TrackedObstacle(float x, float y) : pos_x(x), pos_y(y) {
+    TrackedObstacle(float x, float y, float vx, float vy) : pos_x(x), pos_y(y), vx(vx), vy(vy) {
         kf = std::make_unique<KalmanFilter2D>(x, y);
     }
 
     // 必须提供一个默认构造函数，因为 std::vector 等容器需要它
-    TrackedObstacle() : pos_x(0), pos_y(0) {}
+    TrackedObstacle() : pos_x(0), pos_y(0), vx(0), vy(0) {}
 
     // --- 新增：拷贝构造函数 ---
     TrackedObstacle(const TrackedObstacle& other) {
@@ -93,6 +93,9 @@ struct TrackedObstacle {
         for(int i = 0; i < 3; i++) Translation[i] = other.Translation[i];
         for(int i = 0; i < 9; i++) Rotation[i] = other.Rotation[i];
         for(int i = 0; i < 4; i++) corners[i] = other.corners[i];
+
+        vx = other.vx;
+        vy = other.vy;
 
         // 2. 深拷贝 unique_ptr 成员
         if (other.kf) {
@@ -128,6 +131,9 @@ struct TrackedObstacle {
         for(int i = 0; i < 9; i++) Rotation[i] = other.Rotation[i];
         for(int i = 0; i < 4; i++) corners[i] = other.corners[i];
 
+        vx = other.vx;
+        vy = other.vy;
+
         // 3. 深拷贝 unique_ptr 成员
         if (other.kf) {
             // 如果目标对象已有 kf，先释放它（unique_ptr 会自动处理）
@@ -152,7 +158,7 @@ class SimpleTracker {
 public:
     std::vector<TrackedObstacle> vtrackings; // 存储所有正在跟踪的目标
     // int next_id = 9999;             // 下一个可用的ID
-    float match_threshold = 1.0f;//0.3f;      // 匹配阈值，单位：米。可以根据实际情况调整
+    float match_threshold = 0.5f;//0.3f;      // 匹配阈值，单位：米。可以根据实际情况调整
 
     // 更新跟踪列表
     // detections: 当前帧从相机获取的障碍物列表（未带ID）

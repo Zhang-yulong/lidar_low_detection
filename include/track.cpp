@@ -113,15 +113,14 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
             // }
 			
 
-			// --- 漏检预测逻辑 ---
-            // x = x + vx * dt
-            track.pos_x = track.pos_x + track.vx * delta_time;
-            track.pos_y = track.pos_y + track.vy * delta_time;
+			// // --- 漏检预测逻辑 x = x + vx * dt---
+            // track.pos_x = track.pos_x + track.vx * delta_time;
+            // track.pos_y = track.pos_y + track.vy * delta_time;
 
 			
 			track.lastSeen++;
 		}
-		// 这里可以添加逻辑删除长时间未出现的目标
+		// 添加删除长时间未出现的目标
 		removeLostTargets();
 		return;
 	}
@@ -135,20 +134,14 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 
 	//  为匹配计算一个“预测位置”，但不直接修改 track 的 pos_x/pos_y
     // 我们创建一个临时的位置列表用于计算代价矩阵
-    std::vector<std::pair<float, float>> predicted_positions;
-    for (const auto& track : vtrackings) {
-        float pred_x = track.pos_x + track.vx * delta_time;
-        float pred_y = track.pos_y + track.vy * delta_time;
-        predicted_positions.push_back({pred_x, pred_y});
-    }
-
-
-	// // 预测所有现有轨迹的位置 (用于匹配)
-    // // 即使有检测，也要先根据上一帧的速度预测这一帧的位置，以便计算距离
-    // for (auto& track : vtrackings) {
-    //     track.pos_x = track.pos_x + track.vx * delta_time;
-    //     track.pos_y = track.pos_y + track.vy * delta_time;
+    // std::vector<std::pair<float, float>> predicted_positions;
+    // for (const auto& track : vtrackings) {
+    //     float pred_x = track.pos_x + track.vx * delta_time;
+    //     float pred_y = track.pos_y + track.vy * delta_time;
+    //     predicted_positions.push_back({pred_x, pred_y});
     // }
+
+
 
 
 	// 2. 计算代价矩阵 (Cost Matrix)
@@ -168,11 +161,11 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
             // float dy = pred_y - detections[d].pos_y;
 
 
-			float dx = predicted_positions[t].first - detections[d].pos_x;
-            float dy = predicted_positions[t].second - detections[d].pos_y;
+			// float dx = predicted_positions[t].first - detections[d].pos_x;
+            // float dy = predicted_positions[t].second - detections[d].pos_y;
 
-			// float dx = vtrackings[t].pos_x - detections[d].pos_x;
-			// float dy = vtrackings[t].pos_y - detections[d].pos_y;
+			float dx = vtrackings[t].pos_x - detections[d].pos_x;
+			float dy = vtrackings[t].pos_y - detections[d].pos_y;
 			float distance = sqrt(dx * dx + dy * dy);
 			cost_matrix[t][d] = distance;
 		}
@@ -207,23 +200,23 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
             // vtrackings[i].pos_x = vtrackings[i].kf->getPosX();
             // vtrackings[i].pos_y = vtrackings[i].kf->getPosY();
 
-			// 1. 保存“上一帧的位置”
-            float old_x = vtrackings[i].pos_x;
-            float old_y = vtrackings[i].pos_y;
+			// // 1. 保存“上一帧的位置”
+            // float old_x = vtrackings[i].pos_x;
+            // float old_y = vtrackings[i].pos_y;
 
-            // 2. 更新位置 (直接使用检测值)
-            vtrackings[i].pos_x = detections[best_det_idx].pos_x;
-            vtrackings[i].pos_y = detections[best_det_idx].pos_y;
+            // // 2. 更新位置 (直接使用检测值)
+            // vtrackings[i].pos_x = detections[best_det_idx].pos_x;
+            // vtrackings[i].pos_y = detections[best_det_idx].pos_y;
             
-            // 3. 更新速度：使用 (当前检测位置 - 上一帧位置) / dt
-            // 这正是您提出的、最直观的方法！
-            vtrackings[i].vx = (vtrackings[i].pos_x - old_x) / delta_time;
-            vtrackings[i].vy = (vtrackings[i].pos_y - old_y) / delta_time;
+            // // 3. 更新速度：使用 (当前检测位置 - 上一帧位置) / dt
+            // // 这正是您提出的、最直观的方法！
+            // vtrackings[i].vx = (vtrackings[i].pos_x - old_x) / delta_time;
+            // vtrackings[i].vy = (vtrackings[i].pos_y - old_y) / delta_time;
 
 
 
-			// vtrackings[i].pos_x = detections[best_det_idx].pos_x;
-			// vtrackings[i].pos_y = detections[best_det_idx].pos_y;
+			vtrackings[i].pos_x = detections[best_det_idx].pos_x;
+			vtrackings[i].pos_y = detections[best_det_idx].pos_y;
 			vtrackings[i].pos_z = detections[best_det_idx].pos_z;
 			
 			vtrackings[i].depth = detections[best_det_idx].depth;
@@ -246,7 +239,7 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 			matched_vtrackings[i] = true;
 			matched_detections[best_det_idx] = true;
 
-			// LOG_RAW(" [与%d匹配上] 当前跟踪id = %d，distance = %.3f\n", best_det_idx, vtrackings[i].id, cost_matrix[i][best_det_idx]);
+			
 			LOG_RAW(" [与%d匹配上] 当前跟踪id = %d，distance = %.3f\n", detections[best_det_idx].cluster_id, vtrackings[i].id, cost_matrix[i][best_det_idx]);
 			// LOG_RAW(" [与%d匹配] Track id = %d，distance = %.3f，Center(%.2f, %.2f, %.2f)，age=%d\n", 
 			// 	detections[best_det_idx].cluster_id, vtrackings[i].id, cost_matrix[i][best_det_idx],
@@ -265,8 +258,8 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 	for (int k = 0; k < cols; k++) {
 		if (!matched_detections[k]) {
 			// 创建新轨迹
-			// TrackedObstacle new_track = detections[k];
-			TrackedObstacle new_track(detections[k].pos_x, detections[k].pos_y); // 使用新构造函数
+			TrackedObstacle new_track = detections[k];
+			// TrackedObstacle new_track(detections[k].pos_x, detections[k].pos_y, 0.0 , 0.0); // 使用新构造函数
 
 			new_track.cluster_id = detections[k].cluster_id;
 			new_track.id = nextTrackID++;
@@ -304,7 +297,7 @@ void SimpleTracker::removeLostTargets(){
 // 移除 lastSeen > 10 的目标（例如：连续10帧没看到就删掉）
 	auto it = std::remove_if(vtrackings.begin(), vtrackings.end(),
 		[](const TrackedObstacle& t) { 
-			 return t.lastSeen > 10; 
+			return t.lastSeen > 10; 
 			// return t.lastSeen == 1; 
 		}
 	);
