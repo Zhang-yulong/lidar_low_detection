@@ -15,11 +15,14 @@ using namespace Lidar_Low_Detection;
 
 #define CvLane_MC_PORT 9139
 
+// 在CMakeLists.txt和Makefile中定义了LOG_CFG_FILE_PATH
 // #define LOG_CFG_FILE_PATH "/home/zyl/echiev_low_lidar_detection/config/ulog.cfg"
 // #define LOG_CFG_FILE_PATH "/etc/ulog/curb/config/ulog.cfg"
 // #define LOG_CFG_FILE_PATH "/etc/echiev/low_detection/ulog.cfg"
 
-bool test_EMX = true;
+namespace Lidar_Low_Detection {
+    extern bool test_EMX;
+}
 
 // 默认使用 /etc/echiev/low_detection/debug_config.yaml，可通过命令行 -f <path> 覆盖
 // std::string Yaml_Path = "/home/zyl/echiev_low_lidar_detection/config/debug_config.yaml";

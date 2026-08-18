@@ -10,6 +10,7 @@ namespace Lidar_Low_Detection
 
 std::atomic<unsigned long long> g_previousTimestamp(0);
 
+bool test_EMX = true; 
 
 SutengDriver::SutengDriver(){
     m_pElevationMapGroundFilter = nullptr;
@@ -330,6 +331,16 @@ void SutengDriver::PointCloudTransform(PointCloud2Intensity::Ptr &pInputCloud, c
             dst.x = src.x;
             dst.y = src.y;
             dst.z = src.z;
+            // if (test_EMX)
+            // {
+            
+            //     if(src.z > -1.265){
+            //         dst.z = src.z;
+            //     }
+            //     else{
+            //         dst.z = -1.265;
+            //     }
+            // }
             dst.intensity = src.intensity;
         }    
        
@@ -833,7 +844,7 @@ bool SutengDriver::SpinGroundViewerOnce()
 }
 #endif // ---- 可视化已迁移至 main.cpp
 
-extern bool test_emx; 
+
 
 void SutengDriver::ProcessPcapCloud(){
 
@@ -854,7 +865,7 @@ void SutengDriver::ProcessPcapCloud(){
     // Eigen::Matrix4f R_CombinedTransMatrix = (m_ST_AllLidarTransfromInfo->toCarInfo.transformMartix 
     //                         * m_ST_AllLidarTransfromInfo->toMainLidarInfo.transformMartix);
 
-    if(test_emx){
+    if(test_EMX){
         // Eigen::Matrix4f R_CombinedTransMatrix = Eigen::Matrix4f::Identity();
     }
 
@@ -988,6 +999,7 @@ void SutengDriver::ProcessPcapCloud(){
             std::vector<TrackedObstacle> detections;
             ConvertClustersToTrackedObstacles(outputClusters, detections);
             m_tracker.update(detections, rec_timestamp_ms);
+            // m_tracker.update_V2(detections, rec_timestamp_ms);
 
             // std::cout <<" ----[Tracker] stable IDs (from 9999)----"<<std::endl;
             for (const auto& track : m_tracker.vtrackings)
@@ -1143,7 +1155,11 @@ void SutengDriver::ConvertClustersToTrackedObstacles(
         obs.age    = 0;
         obs.lastSeen = 0;
 
-        // Translation/Rotation 暂不填充（当前 tracker 对 distance > 0.2 才更新这些字段）
+        obs.vx = 0.0;
+        obs.vy = 0.0;
+
+
+        // Translation/Rotation 暂不填充
         memset(obs.Translation, 0, sizeof(obs.Translation));
         memset(obs.Rotation, 0, sizeof(obs.Rotation));
 

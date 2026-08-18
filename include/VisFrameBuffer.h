@@ -104,6 +104,7 @@ static void InitGroundViewer()
     ground_viewer->addCoordinateSystem(2.0);
 }
 
+
 // ---- 更新显示 (GridCluster 版本) ----
 static void UpdateGroundViewer(const PointCloud2Intensity::Ptr&       pGroundCloud,
                                const PointCloud2Intensity::Ptr&       pObstacleCloud,
@@ -111,9 +112,9 @@ static void UpdateGroundViewer(const PointCloud2Intensity::Ptr&       pGroundClo
 {
     if (!ground_viewer) return;
 
-    // 地面 (绿)
+    // 地面 (绿)-> 白
     {
-        pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZI> c(pGroundCloud, 0, 255, 0);
+        pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZI> c(pGroundCloud, 255, 255, 255);
         if (!ground_viewer->updatePointCloud<pcl::PointXYZI>(pGroundCloud, c, "ground"))
         {
             ground_viewer->addPointCloud<pcl::PointXYZI>(pGroundCloud, c, "ground");
@@ -121,9 +122,9 @@ static void UpdateGroundViewer(const PointCloud2Intensity::Ptr&       pGroundClo
                 pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "ground");
         }
     }
-    // 障碍物 (红)
+    // 障碍物 (红)-> 绿
     {
-        pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZI> c(pObstacleCloud, 255, 0, 0);
+        pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZI> c(pObstacleCloud, 0, 255, 0);
         if (!ground_viewer->updatePointCloud<pcl::PointXYZI>(pObstacleCloud, c, "obstacle"))
         {
             ground_viewer->addPointCloud<pcl::PointXYZI>(pObstacleCloud, c, "obstacle");
@@ -131,7 +132,7 @@ static void UpdateGroundViewer(const PointCloud2Intensity::Ptr&       pGroundClo
                 pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 2, "obstacle");
         }
     }
-    // cluster 包围盒
+    // cluster 包围盒  (白)-> 红
     for (int i = 0; i < g_lastClusterCount; ++i)
     {
         ground_viewer->removeShape("cluster_box_" + std::to_string(i));
@@ -143,12 +144,12 @@ static void UpdateGroundViewer(const PointCloud2Intensity::Ptr&       pGroundClo
         std::string box_id    = "cluster_box_"    + std::to_string(i);
         std::string center_id = "cluster_center_" + std::to_string(i);
         ground_viewer->addCube(c.min_x, c.max_x, c.min_y, c.max_y, c.min_z, c.max_z,
-                               1.0, 1.0, 1.0, box_id);
+                               255, 0, 0, box_id);
         ground_viewer->setShapeRenderingProperties(
             pcl::visualization::PCL_VISUALIZER_REPRESENTATION,
             pcl::visualization::PCL_VISUALIZER_REPRESENTATION_WIREFRAME, box_id);
-        ground_viewer->addSphere(pcl::PointXYZ(c.center_x, c.center_y, c.center_z),
-                                 0.15, 1.0, 1.0, 0.0, center_id);
+        // ground_viewer->addSphere(pcl::PointXYZ(c.center_x, c.center_y, c.center_z),
+        //                          0.15, 1.0, 1.0, 0.0, center_id);
     }
     g_lastClusterCount = static_cast<int>(clusters.size());
 }
@@ -160,9 +161,10 @@ static void UpdateGroundViewer(const PointCloud2Intensity::Ptr&       pGroundClo
 {
     if (!ground_viewer) return;
 
-    // 地面 (绿)
+    // 地面 (绿)-> 白
     {
-        pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZI> c(pGroundCloud, 0, 255, 0);
+        pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZI> c(pGroundCloud, 255, 255, 255);
+        
         if (!ground_viewer->updatePointCloud<pcl::PointXYZI>(pGroundCloud, c, "ground"))
         {
             ground_viewer->addPointCloud<pcl::PointXYZI>(pGroundCloud, c, "ground");
@@ -170,9 +172,9 @@ static void UpdateGroundViewer(const PointCloud2Intensity::Ptr&       pGroundClo
                 pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "ground");
         }
     }
-    // 障碍物 (红)
+    // 障碍物 (红)-> 绿
     {
-        pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZI> c(pObstacleCloud, 255, 0, 0);
+        pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZI> c(pObstacleCloud, 0, 255, 0);
         if (!ground_viewer->updatePointCloud<pcl::PointXYZI>(pObstacleCloud, c, "obstacle"))
         {
             ground_viewer->addPointCloud<pcl::PointXYZI>(pObstacleCloud, c, "obstacle");
@@ -180,7 +182,7 @@ static void UpdateGroundViewer(const PointCloud2Intensity::Ptr&       pGroundClo
                 pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 2, "obstacle");
         }
     }
-    // tracked obstacle 包围盒
+    // tracked obstacle 包围盒 (白)-> 红
     for (int i = 0; i < g_lastTrackCount; ++i)
     {
         ground_viewer->removeShape("track_box_" + std::to_string(i));
@@ -205,12 +207,12 @@ static void UpdateGroundViewer(const PointCloud2Intensity::Ptr&       pGroundClo
         std::string box_id    = "track_box_"    + std::to_string(i);
         std::string center_id = "track_center_" + std::to_string(i);
         ground_viewer->addCube(min_x, max_x, min_y, max_y, min_z, max_z,
-                               1.0, 1.0, 1.0, box_id);
+                               255, 0, 0, box_id);
         ground_viewer->setShapeRenderingProperties(
             pcl::visualization::PCL_VISUALIZER_REPRESENTATION,
             pcl::visualization::PCL_VISUALIZER_REPRESENTATION_WIREFRAME, box_id);
-        ground_viewer->addSphere(pcl::PointXYZ(t.pos_x, t.pos_y, t.pos_z),
-                                 0.2, 1.0, 0.5, 0.0, center_id);
+        // ground_viewer->addSphere(pcl::PointXYZ(t.pos_x, t.pos_y, t.pos_z),
+        //                          0.2, 1.0, 0.5, 0.0, center_id);
     }
     g_lastTrackCount = static_cast<int>(tracks.size());
 }

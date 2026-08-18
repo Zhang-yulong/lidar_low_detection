@@ -49,22 +49,22 @@ public:
 
 // 定义一个带ID的障碍物结构体
 struct TrackedObstacle {
-    int cluster_id;   // 对应的簇 ID（可选，用于调试或溯源）
-    int id;           // 跟踪ID
-    float pos_x;            // 中心点X
-    float pos_y;            // 中心点Y
-    float pos_z;           // 中心点 Z
-    Point2D corners[4]; 	//二维平面上的4个顶点
-    float depth;            // 深度
-    float width;            // 宽度
-    float height;          	// 高度
-    int age;                // 存活帧数（用于调试或清理）
-    int lastSeen;           // 最后一次见到的帧数（用于清理消失的目标）
+    int cluster_id = -1;   // 对应的簇 ID（可选，用于调试或溯源）
+    int id = -1;           // 跟踪ID
+    float pos_x = 0.0f;    // 中心点X
+    float pos_y = 0.0f;    // 中心点Y
+    float pos_z = 0.0f;    // 中心点 Z
+    Point2D corners[4] = {}; 	//二维平面上的4个顶点
+    float depth = 0.0f;    // 深度
+    float width = 0.0f;    // 宽度
+    float height = 0.0f;   // 高度
+    int age = 0;           // 存活帧数（用于调试或清理）
+    int lastSeen = 0;      // 最后一次见到的帧数（用于清理消失的目标）
     float Translation[3] = {0.0f, 0.0f, 0.0f};
     float Rotation[9] ={0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};     //!< 旋转矩阵
 
-    float vx;
-    float vy;
+    float vx = 0.0f;
+    float vy = 0.0f;
 
     // 新增：指向卡尔曼滤波器的智能指针
     std::unique_ptr<KalmanFilter2D> kf;
@@ -163,6 +163,13 @@ public:
     // 更新跟踪列表
     // detections: 当前帧从相机获取的障碍物列表（未带ID）
     void update(const std::vector<TrackedObstacle>& detections,  const unsigned long long &time);
+
+    void update_V2(const std::vector<TrackedObstacle>& detections, const unsigned long long &time);
+
+    void hungarianAssignment(
+        const std::vector<std::vector<float>>& cost_matrix,
+        std::vector<int>& track_to_detection
+    );
 
 private:
     void removeLostTargets();
