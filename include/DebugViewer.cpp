@@ -16,7 +16,10 @@
 // #include "opencv2/opencv.hpp"
 namespace Lidar_Low_Detection
 {
-
+// 说明：融合 pose.heading 是 IMU 航向，与点云/Grid 主雷达系前向相差补偿角
+//       （= 90° + fLidar2Vehicle_Heading，由 lidar.cfg 计算，见 docs/HDMap可视化.md 第五节）。
+//       该补偿已在 CoordinateTransformer 内部统一应用（main.cpp 启动时设置一次），
+//       可视化与过滤共用，此处无需再手动加，避免重复/遗漏。
 // ============================================================================
 // 构造
 // ============================================================================
@@ -58,6 +61,13 @@ void DebugViewer::ShowOrSave(const cv::Mat& image, const std::string& name,
     if (viewCfg.show)
     {
         cv::namedWindow(name, cv::WINDOW_NORMAL);
+
+        // 首次显示：固定初始窗口大小 + 自动"一上一下"排布（不重叠）
+        if (m_shownWindows.find(name) == m_shownWindows.end())
+        {
+            LayoutWindow(name, image);
+        }
+
         cv::imshow(name, image);
     }
 
@@ -68,6 +78,52 @@ void DebugViewer::ShowOrSave(const cv::Mat& image, const std::string& name,
                                std::to_string(m_frameCount) + "_" + name + ".png";
         cv::imwrite(filepath, image);
     }
+}
+
+int DebugViewer::CountShownWindows() const
+{
+    int n = 0;
+    n += (m_DV_config.HeightMap.enable         && m_DV_config.HeightMap.show) ? 1 : 0;
+    n += (m_DV_config.GroundMask.enable        && m_DV_config.GroundMask.show) ? 1 : 0;
+    n += (m_DV_config.Slope.enable             && m_DV_config.Slope.show) ? 1 : 0;
+    n += (m_DV_config.GroundReference.enable   && m_DV_config.GroundReference.show) ? 1 : 0;
+    n += (m_DV_config.ObstacleCandidate.enable && m_DV_config.ObstacleCandidate.show) ? 1 : 0;
+    n += (m_DV_config.Cluster.enable           && m_DV_config.Cluster.show) ? 1 : 0;
+    n += (m_DV_config.BoundingBox.enable       && m_DV_config.BoundingBox.show) ? 1 : 0;
+    n += (m_DV_config.Overlay.enable           && m_DV_config.Overlay.show) ? 1 : 0;
+    n += (m_DV_config.TrackerOverlay.enable    && m_DV_config.TrackerOverlay.show) ? 1 : 0;
+    return std::max(1, n);
+}
+
+void DebugViewer::LayoutWindow(const std::string& name, const cv::Mat& image)
+{
+    if (m_shownWindows.find(name) != m_shownWindows.end())
+    {
+        return;  // 已定位过，保留用户手动调整后的位置/大小
+    }
+    m_shownWindows.insert(name);
+
+    const int shown = CountShownWindows();
+
+    // 每个窗口可用的垂直空间：在 [m_layoutTopY, m_layoutMaxY] 内均分
+    // budgetH = (上限 - 顶部留白 - 其余窗口的间隔) / 窗口总数
+    float budgetH = static_cast<float>(m_layoutMaxY - m_layoutTopY
+                                       - (shown - 1) * m_windowGap)
+                    / static_cast<float>(shown);
+    if (budgetH < 1.0f) budgetH = 1.0f;
+
+    // 等比缩放：同时受"最大宽度"与"均分高度"约束，只缩小不放大
+    float scale = std::min(static_cast<float>(m_layoutMaxW) / static_cast<float>(std::max(1, image.cols)),
+                           budgetH                        / static_cast<float>(std::max(1, image.rows)));
+    scale = std::max(0.05f, std::min(1.0f, scale));
+
+    const int w = std::max(1, static_cast<int>(image.cols * scale));
+    const int h = std::max(1, static_cast<int>(image.rows * scale));
+
+    cv::resizeWindow(name, w, h);            // 固定初始窗口大小（1:1 等比缩放后）
+    cv::moveWindow(name, m_layoutX, m_layoutY);  // 放到自动布局位置
+
+    m_layoutY += h + m_windowGap;            // 下一个窗口排到正下方
 }
 
 
@@ -281,19 +337,53 @@ cv::Vec3b DebugViewer::LabelToColor(int label)
 // 内部辅助：世界坐标 → 像素坐标 (用于 Overlay 图)
 // ============================================================================
 
+void DebugViewer::ComputeGridImageGeometry(const ElevationGridConfig& gridCfg,
+                                           int& rows, int& cols,
+                                           int& px_blind_offset,
+                                           int& img_w, int& img_h) const
+{
+    float inv_resolution = 1.0f / gridCfg.grid_resolution;
+
+    // 车前盲区距离与像素偏移 (与 1~6 层一致)
+    float blind_dist_x = gridCfg.car_half_x + gridCfg.body_filter_x_threshold;
+    int   blind_cols   = static_cast<int>(std::round(blind_dist_x / gridCfg.grid_resolution));
+    px_blind_offset    = blind_cols * kGridPixelScale;
+
+    // 网格行列数 (与算法 m_grid_rows / m_grid_cols 一致)
+    rows = static_cast<int>(std::ceil((gridCfg.roi_y_max - gridCfg.roi_y_min) * inv_resolution));
+    cols = static_cast<int>(std::ceil((gridCfg.roi_x_max - blind_dist_x) * inv_resolution));
+
+    // 图像尺寸 = 盲区像素 + 有效网格像素 + 边距
+    img_w = px_blind_offset + (cols * kGridPixelScale) + expand_img_w;
+    img_h = (rows * kGridPixelScale) + expand_img_h;
+}
+
 void DebugViewer::WorldToPixel(float wx, float wy, int& px, int& py,
                                 const ElevationGridConfig& gridCfg) const
 {
-    // Overlay 图: x(前向)→列, y(左右)→行
-    // 将 ROI 映射到 [0, kOverlayWidth-1] × [0, kOverlayHeight-1]
-    float norm_x = (wx - gridCfg.roi_x_min) / (gridCfg.roi_x_max - gridCfg.roi_x_min);
-    float norm_y = (wy - gridCfg.roi_y_min) / (gridCfg.roi_y_max - gridCfg.roi_y_min);
+    // 与 Grid 调试图(1~6层)保持一致的坐标系:
+    //   x(前向)→像素列, y(左向)→像素行(顶部为 Y+ / 左侧)
+    //   物理坐标 → 像素: px = 盲区偏移 + (x - 盲区距离)*inv_res*scale + 左边距
+    //                    py = (rows-1 - (y - roi_y_min)*inv_res)*scale + 上边距
+    float inv_resolution = 1.0f / gridCfg.grid_resolution;
+    float blind_dist_x   = gridCfg.car_half_x + gridCfg.body_filter_x_threshold;
 
-    px = static_cast<int>(norm_x * (kOverlayWidth  - 1));
-    py = static_cast<int>((1.0f - norm_y) * (kOverlayHeight - 1));  // Y 翻转
+    int rows, cols, px_blind_offset, img_w, img_h;
+    ComputeGridImageGeometry(gridCfg, rows, cols, px_blind_offset, img_w, img_h);
 
-    px = std::max(0, std::min(kOverlayWidth  - 1, px));
-    py = std::max(0, std::min(kOverlayHeight - 1, py));
+    float px_f = px_blind_offset + (wx - blind_dist_x) * inv_resolution * kGridPixelScale
+                 + (expand_img_w / 2);
+    // float py_f = ((rows - 1) - (wy - gridCfg.roi_y_min) * inv_resolution) * kGridPixelScale
+    //              + (expand_img_h / 2);
+    float py_f = ((rows) - (wy - gridCfg.roi_y_min) * inv_resolution) * kGridPixelScale
+                 + (expand_img_h / 2);
+
+
+    px = static_cast<int>(px_f);
+    py = static_cast<int>(py_f);
+
+    px = std::max(0, std::min(img_w - 1, px));
+    py = std::max(0, std::min(img_h - 1, py));
 }
 
 // ============================================================================
@@ -558,10 +648,6 @@ void DebugViewer::DrawHeightMap(const std::vector<GridCell>& grid,
         }
     }
 
-    // // 2. 基础参数计算
-    // float inv_resolution = 1.0f / gridCfg.grid_resolution;
-
-    
     // 【关键】计算物理盲区对应的格子数和像素偏移
     // 假设盲区是从 roi_x_min 开始的一段距离（例如车前 0.9m）
     // 如果你的盲区是固定的 0.9m，可以直接用 0.9f，或者使用配置项：
@@ -1079,12 +1165,21 @@ void DebugViewer::DrawBoundingBox(const std::vector<GridCluster>& clusters,
     const auto& viewCfg = m_DV_config.BoundingBox;
     if (!viewCfg.enable) return;
 
-    // 黑色背景
-    cv::Mat image(kOverlayHeight, kOverlayWidth, CV_8UC3, cv::Scalar(20, 20, 20));
+    // 与 1~6 层一致: 计算图像几何(含车前盲区偏移)与窗口宽高
+    int rows, cols, px_blind_offset, img_w, img_h;
+    ComputeGridImageGeometry(gridCfg, rows, cols, px_blind_offset, img_w, img_h);
 
-    // 绘制 ROI 边框
-    cv::rectangle(image, cv::Point(0, 0),
-                  cv::Point(kOverlayWidth - 1, kOverlayHeight - 1),
+    // 深灰背景
+    cv::Mat image(img_h, img_w, CV_8UC3, cv::Scalar(20, 20, 20));
+
+    // 背景网格 + 坐标轴 (与 1~6 层坐标系一致, 先画以免遮挡包围盒)
+    AddBackGround(image, img_w, img_h, gridCfg);
+
+    // 绘制 ROI 有效区域边框 (对应 1~6 层网格绘制区域)
+    cv::rectangle(image,
+                  cv::Point(px_blind_offset + (expand_img_w / 2), (expand_img_h / 2)),
+                  cv::Point(px_blind_offset + cols * kGridPixelScale + (expand_img_w / 2) - 1,
+                            rows * kGridPixelScale + (expand_img_h / 2) - 1),
                   cv::Scalar(80, 80, 80), 1);
 
     for (size_t i = 0; i < clusters.size(); ++i)
@@ -1149,20 +1244,31 @@ void DebugViewer::DrawBoundingBox(const std::vector<GridCluster>& clusters,
 // 8. DrawOverlay —— 最终点云叠加图
 // ============================================================================
 
-void DebugViewer::DrawOverlay(const pcl::PointCloud<pcl::PointXYZI>& groundCloud,
+void DebugViewer::DrawClusterOverlay(const pcl::PointCloud<pcl::PointXYZI>& groundCloud,
                                const pcl::PointCloud<pcl::PointXYZI>& obstacleCloud,
                                const std::vector<GridCluster>& clusters,
-                               const ElevationGridConfig& gridCfg)
+                               const ElevationGridConfig& gridCfg,
+                               const std::vector<std::vector<STR_POINT2F>>& mapPolygons,
+                               const LocalizationManager::Pose& pose)
 {
     const auto& viewCfg = m_DV_config.Overlay;
     if (!viewCfg.enable) return;
 
-    // 黑色背景
-    cv::Mat image(kOverlayHeight, kOverlayWidth, CV_8UC3, cv::Scalar(20, 20, 20));
+    // 与 1~6 层一致: 计算图像几何(含车前盲区偏移)与窗口宽高
+    int rows, cols, px_blind_offset, img_w, img_h;
+    ComputeGridImageGeometry(gridCfg, rows, cols, px_blind_offset, img_w, img_h);
 
-    // ROI 边框
-    cv::rectangle(image, cv::Point(0, 0),
-                  cv::Point(kOverlayWidth - 1, kOverlayHeight - 1),
+    // 深灰背景
+    cv::Mat image(img_h, img_w, CV_8UC3, cv::Scalar(20, 20, 20));
+
+    // 背景网格 + 坐标轴 (与 1~6 层坐标系一致, 先画以免遮挡点云/包围盒)
+    AddBackGround(image, img_w, img_h, gridCfg);
+
+    // ROI 有效区域边框 (对应 1~6 层网格绘制区域)
+    cv::rectangle(image,
+                  cv::Point(px_blind_offset + (expand_img_w / 2), (expand_img_h / 2)),
+                  cv::Point(px_blind_offset + cols * kGridPixelScale + (expand_img_w / 2) - 1,
+                            rows * kGridPixelScale + (expand_img_h / 2) - 1),
                   cv::Scalar(80, 80, 80), 1);
 
     // 绘制地面点 (绿色)
@@ -1171,7 +1277,7 @@ void DebugViewer::DrawOverlay(const pcl::PointCloud<pcl::PointXYZI>& groundCloud
         if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) continue;
         int px, py;
         WorldToPixel(pt.x, pt.y, px, py, gridCfg);
-        if (px >= 0 && px < kOverlayWidth && py >= 0 && py < kOverlayHeight)
+        if (px >= 0 && px < img_w && py >= 0 && py < img_h)
         {
             image.at<cv::Vec3b>(py, px) = cv::Vec3b(0, 180, 0);  // 绿色
         }
@@ -1183,7 +1289,7 @@ void DebugViewer::DrawOverlay(const pcl::PointCloud<pcl::PointXYZI>& groundCloud
         if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) continue;
         int px, py;
         WorldToPixel(pt.x, pt.y, px, py, gridCfg);
-        if (px >= 0 && px < kOverlayWidth && py >= 0 && py < kOverlayHeight)
+        if (px >= 0 && px < img_w && py >= 0 && py < img_h)
         {
             image.at<cv::Vec3b>(py, px) = cv::Vec3b(0, 0, 220);  // 红色
         }
@@ -1221,6 +1327,16 @@ void DebugViewer::DrawOverlay(const pcl::PointCloud<pcl::PointXYZI>& groundCloud
         cv::circle(image, cv::Point(cx, cy), 3, cv::Scalar(0, 220, 220), -1);
     }
 
+    if (pose.valid && !mapPolygons.empty()){
+        // 地图白线叠加（只绘制，不改变算法状态）
+        DrawHdMapOverlay(image, mapPolygons, pose, gridCfg);
+
+        // // // 【临时调试】HDMap 叠加校准（1m 参考框 + 最近边界点，排查完成后删除）
+        // DrawHdMapOverlayCalib(image, mapPolygons, pose, gridCfg);
+
+    }
+
+    
     char title[128];
     snprintf(title, sizeof(title), "Overlay G:%zu Obs:%zu Clusters:%zu",
              groundCloud.size(), obstacleCloud.size(), clusters.size());
@@ -1228,6 +1344,289 @@ void DebugViewer::DrawOverlay(const pcl::PointCloud<pcl::PointXYZI>& groundCloud
                 cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
 
     ShowOrSave(image, "Overlay", viewCfg);
+}
+
+// ============================================================================
+// 9. DrawOverlay(TrackedObstacle) —— 跟踪结果点云叠加图（第九层）
+// ============================================================================
+
+void DebugViewer::DrawHdMapOverlay(cv::Mat& image,
+                                  const std::vector<std::vector<STR_POINT2F>>& mapPolygons,
+                                  const LocalizationManager::Pose& pose,
+                                  const ElevationGridConfig& gridCfg)
+{
+    if (mapPolygons.empty() || !pose.valid || image.empty())
+    {
+        return;
+    }
+
+    VehiclePose vpose;
+    vpose.x = pose.x;
+    vpose.y = pose.y;
+    // 注：主雷达系↔融合IMU系 航向补偿已在 CoordinateTransformer::mapToVehicle 内部应用
+    vpose.heading_deg = pose.heading_deg;
+
+    for (const auto& poly : mapPolygons)
+    {
+        if (poly.size() < 2)
+        {
+            continue;
+        }
+
+        std::vector<cv::Point> pts;
+        pts.reserve(poly.size());
+        for (const auto& p : poly)
+        {
+            double veh_x = 0.0, veh_y = 0.0;
+            CoordinateTransformer::mapToVehicle(static_cast<double>(p.fX),
+                                               static_cast<double>(p.fY),
+                                               vpose,
+                                               veh_x, veh_y);
+
+            int px = 0, py = 0;
+            WorldToPixel(static_cast<float>(veh_x),
+                         static_cast<float>(veh_y),
+                         px, py, gridCfg);
+
+            if (px >= 0 && px < image.cols && py >= 0 && py < image.rows)
+            {
+                pts.emplace_back(px, py);
+            }
+        }
+
+        if (pts.size() >= 2)
+        {
+            // 只画道路边界轮廓，使用更明显的白线，避免与检测框混淆。
+            cv::polylines(image, pts, true, cv::Scalar(255, 255, 255), 2);
+        }
+    }
+}
+
+// ============================================================================
+// 9b. DrawHdMapOverlayCalib —— 【临时调试】HDMap 叠加校准辅助
+// ============================================================================
+//
+// 用途：验证 HDMap 白线投影到 TrackerOverlay 的像素/米比例与坐标系是否与
+//       ElevationMap Grid 一致（对应"白线整体叠在墙上"的排查）。
+//   1. 在车体原点 (0,0) 画 1m×1m 参考框（品红色）：
+//      - 框的像素宽/高应等于理论值 kGridPixelScale/grid_resolution（如 100px/m）。
+//   2. 找距车辆最近的 HDMap 边界点（青色圆点），并画原点到该点的连线：
+//      - 连线像素长度 / 车体系距离 = 实测 px/m，可反算实际生效的缩放。
+//   3. 数值结果打到日志（LOG_RAW），便于量化对比。
+// 注意：仅用于定位根因，排查完成后请删除本函数及其调用。
+// ============================================================================
+void DebugViewer::DrawHdMapOverlayCalib(
+    cv::Mat& image,
+    const std::vector<std::vector<STR_POINT2F>>& mapPolygons,
+    const LocalizationManager::Pose& pose,
+    const ElevationGridConfig& gridCfg) const
+{
+    // 临时调试开关：排查看完请置 false 或删除本函数
+    static const bool kEnableCalib = true;
+    if (!kEnableCalib || image.empty())
+    {
+        return;
+    }
+
+    const float inv_res = 1.0f / std::max(gridCfg.grid_resolution, 1e-6f);
+    const float theory_px_per_m = kGridPixelScale * inv_res;   // 例: 10 / 0.1 = 100 px/m
+
+    // ---- 1 车体原点像素坐标 ----
+    int ox = 0, oy = 0;
+    WorldToPixel(0.0f, 0.0f, ox, oy, gridCfg);
+
+    // ---- 2 1m×1m 参考框（车体原点为中心）----
+    const float box[4][2] = {
+        {-0.5f, -0.5f}, {0.5f, -0.5f}, {0.5f, 0.5f}, {-0.5f, 0.5f}
+    };
+    std::vector<cv::Point> boxPts(4);
+    for (int i = 0; i < 4; ++i)
+    {
+        int px = 0, py = 0;
+        WorldToPixel(box[i][0], box[i][1], px, py, gridCfg);
+        boxPts[i] = cv::Point(px, py);
+    }
+    cv::polylines(image, boxPts, true, cv::Scalar(255, 0, 255), 2);
+    cv::circle(image, cv::Point(ox, oy), 4, cv::Scalar(255, 0, 255), -1);
+    cv::putText(image, "1m(calib)", cv::Point(boxPts[0].x + 2, boxPts[0].y - 4),
+                cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 0, 255), 1);
+
+    const int box_px_w = std::abs(boxPts[1].x - boxPts[0].x);  // 应≈theory_px_per_m
+    const int box_px_h = std::abs(boxPts[3].y - boxPts[0].y);
+
+    // ---- 3 距车辆最近的 HDMap 边界点 ----
+    if (!mapPolygons.empty() && pose.valid)
+    {
+        double best_d2 = 1e30;
+        double best_map_x = 0.0, best_map_y = 0.0;
+        for (const auto& poly : mapPolygons)
+        {
+            for (const auto& p : poly)
+            {
+                const double dx = static_cast<double>(p.fX) - pose.x;
+                const double dy = static_cast<double>(p.fY) - pose.y;
+                const double d2 = dx * dx + dy * dy;
+                if (d2 < best_d2)
+                {
+                    best_d2 = d2;
+                    best_map_x = static_cast<double>(p.fX);
+                    best_map_y = static_cast<double>(p.fY);
+                }
+            }
+        }
+
+        // 地图点 → 车体系（与 DrawHdMapOverlay 完全相同的链路；航向补偿在 mapToVehicle 内部）
+        VehiclePose vpose;
+        vpose.x = pose.x;
+        vpose.y = pose.y;
+        vpose.heading_deg = pose.heading_deg;
+
+        double veh_x = 0.0, veh_y = 0.0;
+        CoordinateTransformer::mapToVehicle(best_map_x, best_map_y, vpose, veh_x, veh_y);
+
+        int px = 0, py = 0;
+        WorldToPixel(static_cast<float>(veh_x), static_cast<float>(veh_y), px, py, gridCfg);
+
+        // 绘制：最近点（青色）+ 原点到该点连线
+        cv::circle(image, cv::Point(px, py), 5, cv::Scalar(220, 220, 0), -1);
+        cv::line(image, cv::Point(ox, oy), cv::Point(px, py), cv::Scalar(220, 220, 0), 1, cv::LINE_AA);
+
+        // 反算实测 px/m
+        const double veh_dist = std::sqrt(veh_x * veh_x + veh_y * veh_y);
+        const double px_dist  = std::sqrt(static_cast<double>((px - ox) * (px - ox) + (py - oy) * (py - oy)));
+        const double actual_px_per_m = (veh_dist > 1e-3) ? (px_dist / veh_dist) : 0.0;
+
+        LOG_RAW("[HdMapCalib] pose=(%.2f,%.2f,h=%.1f->%.1f) valid=%d | theory_px/m=%.1f box_px_w=%d box_px_h=%d | nearest_map=(%.2f,%.2f) veh=(%.2f,%.2f) dist_veh=%.2fm px_dist=%.1fpx actual_px/m=%.1f\n",
+                pose.x, pose.y, pose.heading_deg,
+                pose.heading_deg + CoordinateTransformer::gridHeadingOffsetDeg(), pose.valid ? 1 : 0,
+                theory_px_per_m, box_px_w, box_px_h,
+                best_map_x, best_map_y, veh_x, veh_y,
+                veh_dist, px_dist, actual_px_per_m);
+    }
+    else
+    {
+        LOG_RAW("[HdMapCalib] no polygons or pose invalid: n=%zu valid=%d theory_px/m=%.1f box_px_w=%d box_px_h=%d\n",
+                mapPolygons.size(), pose.valid ? 1 : 0, theory_px_per_m, box_px_w, box_px_h);
+    }
+}
+
+void DebugViewer::DrawTrackOverlay(const pcl::PointCloud<pcl::PointXYZI>& groundCloud,
+                               const pcl::PointCloud<pcl::PointXYZI>& obstacleCloud,
+                               const std::vector<TrackedObstacle>& trackers,
+                               const ElevationGridConfig& gridCfg)
+{
+    const auto& viewCfg = m_DV_config.TrackerOverlay;
+    if (!viewCfg.enable) return;
+
+    std::vector<std::vector<STR_POINT2F>> empty_map_polygons;
+    LocalizationManager::Pose empty_pose;
+    empty_pose.valid = false;
+    DrawAllOverlay(groundCloud, obstacleCloud, trackers, gridCfg, empty_map_polygons, empty_pose);
+}
+
+void DebugViewer::DrawAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& groundCloud,
+                               const pcl::PointCloud<pcl::PointXYZI>& obstacleCloud,
+                               const std::vector<TrackedObstacle>& trackers,
+                               const ElevationGridConfig& gridCfg,
+                               const std::vector<std::vector<STR_POINT2F>>& mapPolygons,
+                               const LocalizationManager::Pose& pose)
+{
+    const auto& viewCfg = m_DV_config.TrackerOverlay;
+    if (!viewCfg.enable) return;
+
+    // 与 1~6 层一致: 计算图像几何(含车前盲区偏移)与窗口宽高
+    int rows, cols, px_blind_offset, img_w, img_h;
+    ComputeGridImageGeometry(gridCfg, rows, cols, px_blind_offset, img_w, img_h);
+
+    // 深灰背景
+    cv::Mat image(img_h, img_w, CV_8UC3, cv::Scalar(20, 20, 20));
+
+    // 背景网格 + 坐标轴 (与 1~6 层坐标系一致, 先画以免遮挡点云/跟踪框)
+    AddBackGround(image, img_w, img_h, gridCfg);
+
+    // ROI 有效区域边框 (对应 1~6 层网格绘制区域)
+    cv::rectangle(image,
+                  cv::Point(px_blind_offset + (expand_img_w / 2), (expand_img_h / 2)),
+                  cv::Point(px_blind_offset + cols * kGridPixelScale + (expand_img_w / 2) - 1,
+                            rows * kGridPixelScale + (expand_img_h / 2) - 1),
+                  cv::Scalar(80, 80, 80), 1);
+
+    // 绘制地面点 (绿色)
+    for (const auto& pt : groundCloud.points)
+    {
+        if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) continue;
+        int px, py;
+        WorldToPixel(pt.x, pt.y, px, py, gridCfg);
+        if (px >= 0 && px < img_w && py >= 0 && py < img_h)
+        {
+            image.at<cv::Vec3b>(py, px) = cv::Vec3b(0, 180, 0);  // 绿色
+        }
+    }
+
+    // 绘制障碍物点 (红色)
+    for (const auto& pt : obstacleCloud.points)
+    {
+        if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) continue;
+        int px, py;
+        WorldToPixel(pt.x, pt.y, px, py, gridCfg);
+        if (px >= 0 && px < img_w && py >= 0 && py < img_h)
+        {
+            image.at<cv::Vec3b>(py, px) = cv::Vec3b(0, 0, 220);  // 红色
+        }
+    }
+
+    // 绘制跟踪器: corners 多边形 + 中心 + ID + 速度向量
+    for (size_t i = 0; i < trackers.size(); ++i)
+    {
+        const auto& t = trackers[i];
+
+        // corners[4] 多边形 (白色)
+        std::vector<cv::Point> pts(4);
+        for (int j = 0; j < 4; ++j)
+        {
+            int px, py;
+            WorldToPixel(t.corners[j].x, t.corners[j].y, px, py, gridCfg);
+            pts[j] = cv::Point(px, py);
+        }
+        cv::polylines(image, pts, true, cv::Scalar(255, 255, 255), 2);
+
+        // 中心点 (黄色)
+        int cx, cy;
+        WorldToPixel(t.pos_x, t.pos_y, cx, cy, gridCfg);
+        cv::circle(image, cv::Point(cx, cy), 4, cv::Scalar(0, 220, 220), -1);
+
+        // ID 标注: 优先用跟踪器稳定ID, 否则用簇ID/索引
+        int label_id = t.id;
+        if (label_id < 0) label_id = t.cluster_id;
+        if (label_id < 0) label_id = static_cast<int>(i);
+        cv::putText(image, std::to_string(label_id),
+                    cv::Point(cx + 6, cy - 6),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 255, 255), 1);
+
+        // 速度向量 (青色箭头, 与像素/米比例一致)
+        float v_norm = std::sqrt(t.vx * t.vx + t.vy * t.vy);
+        if (v_norm > 1e-3f)
+        {
+            int ex, ey;
+            WorldToPixel(t.pos_x + t.vx, t.pos_y + t.vy, ex, ey, gridCfg);
+            cv::arrowedLine(image, cv::Point(cx, cy), cv::Point(ex, ey),
+                            cv::Scalar(220, 220, 0), 2, 8, 0.2);
+        }
+    }
+
+    // 地图白线叠加（只绘制，不改变算法状态）
+    DrawHdMapOverlay(image, mapPolygons, pose, gridCfg);
+
+    // // 【临时调试】HDMap 叠加校准（1m 参考框 + 最近边界点，排查完成后删除）
+    DrawHdMapOverlayCalib(image, mapPolygons, pose, gridCfg);
+
+    char title[128];
+    snprintf(title, sizeof(title), "TrackerOverlay G:%zu Obs:%zu Tracks:%zu",
+             groundCloud.size(), obstacleCloud.size(), trackers.size());
+    cv::putText(image, title, cv::Point(10, 20),
+                cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+
+    ShowOrSave(image, "TrackerOverlay", viewCfg);
 }
 
 }  // namespace Lidar_Low_Detection

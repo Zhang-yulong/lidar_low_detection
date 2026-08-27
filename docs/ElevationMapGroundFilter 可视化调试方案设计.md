@@ -314,7 +314,54 @@ obb_corner
 
 ------
 
-# 10. 建议实现统一的 DebugViewer
+# 10. 第九层：Tracker Overlay（跟踪结果点云叠加图）
+
+> 注：该层已实际落地到 `DebugViewer::DrawOverlay()` 的 `TrackedObstacle` 重载版本，
+> 配置项为 `DebugViewer.TrackerOverlay`（enable / show / save），窗口与保存文件名为 `TrackerOverlay`。
+
+跟踪器（`SimpleTracker`）为障碍物分配跨帧稳定 ID 之后，将以下内容叠加到与第 1~8 层完全一致的 Grid 坐标系上：
+
+- Ground Point（绿色）
+- Obstacle Point（红色）
+- 跟踪器 `corners[4]` 多边形（白色线框）
+- 跟踪器中心点（黄色）
+- 跟踪器稳定 ID（白色文本：优先 `t.id`，其次 `t.cluster_id`，最后为数组索引）
+- 速度向量（青色箭头，按 `t.vx / t.vy` 与像素/米比例绘制）
+
+## 10.1 与第八层的区别
+
+| 对比项   | 第八层 Overlay              | 第九层 TrackerOverlay                  |
+| -------- | --------------------------- | -------------------------------------- |
+| 数据来源 | `std::vector<GridCluster>`  | `std::vector<TrackedObstacle>`         |
+| 包围框   | Cluster 的 OBB / AABB       | Tracker 的 `corners[4]` 多边形          |
+| ID       | Cluster 临时 ID（每帧跳变） | Tracker 稳定 ID（跨帧一致）             |
+| 速度     | 无                          | 绘制速度向量箭头                       |
+
+## 10.2 运行时调用位置
+
+在 `SutengDriver::ProcessPcapCloud()` 中、`m_tracker.update()` 之后调用：(2026年8-27日已修改调用位置)
+
+```cpp
+if (m_debugViewer)
+{
+    m_debugViewer->DrawOverlay(*pGroundCloud, *pObstacleCloud,
+                               m_tracker.vtrackings,
+                               m_pElevationMapGroundFilter->GetConfig());
+}
+```
+
+> ⚠️ 注意：该层是"点云叠加 + 跟踪框"的叠加图。即使 `m_tracker.vtrackings` 为空，
+> 地面点（绿）与障碍物点（红）仍会照常绘制；`trackers` 只控制白色跟踪多边形/中心/ID 部分。
+
+## 10.3 调试价值
+
+- 验证 `SimpleTracker` 跨帧 ID 是否稳定；
+- 验证速度向量方向与大小是否合理；
+- 与第八层对比"原始 Cluster"与"跟踪结果"的差异。
+
+------
+
+# 11. 建议实现统一的 DebugViewer
 
 建议不要只输出 GroundCloud，而是在每一帧生成如下调试界面：
 
@@ -335,17 +382,20 @@ DebugViewer
 │
 ├── ⑦ Bounding Box
 │
-└── ⑧ Final PointCloud Overlay
+├── ⑧ Final PointCloud Overlay
+│
+└── ⑨ Tracker Overlay（跟踪结果叠加）
 ```
 
 其中：
 
 - ①～⑥ 主要用于算法调参；
-- ⑦、⑧ 用于验证最终检测效果。
+- ⑦、⑧ 用于验证最终检测效果；
+- ⑨ 用于验证跟踪器的跨帧 ID 稳定性。
 
 ------
 
-# 11. 可视化优先级建议
+# 12. 可视化优先级建议
 
 | 优先级 | 可视化内容                      | 调试价值                                   |
 | ------ | ------------------------------- | ------------------------------------------ |
@@ -357,7 +407,107 @@ DebugViewer
 | ⭐⭐⭐☆☆  | Slope HeatMap                   | 分析 Region Growing 停止原因               |
 | ⭐⭐☆☆☆  | PointCloud Overlay              | 验证最终检测效果                           |
 | ⭐⭐☆☆☆  | OBB / AABB                      | 验证障碍物包围框                           |
+| ⭐⭐☆☆☆  | Tracker Overlay                 | 验证跟踪器跨帧 ID 稳定性                   |
 
 ## 总结
 
-结合当前项目的开发阶段，建议优先实现一个轻量级的二维 Grid DebugViewer。每个 Grid Cell 使用颜色表示不同状态，即可覆盖 Ground Filter、Ground Reference、Obstacle Candidate 和 Cluster 等核心模块的调试需求。相比直接显示三维点云，这种方式实现简单、运行效率高，而且能够更加直观地反映算法每一步的内部状态，是后续参数优化和算法迭代的重要工具。
+结合当前项目的开发阶段，建议优先实现一个轻量级的二维 Grid DebugViewer。每个 Grid Cell 使用颜色表示不同状态，即可覆盖 Ground Filter、Ground Reference、Obstacle Candidate、Cluster 与 Tracker 等核心模块的调试需求。相比直接显示三维点云，这种方式实现简单、运行效率高，而且能够更加直观地反映算法每一步的内部状态，是后续参数优化和算法迭代的重要工具。
+
+------
+
+# 13. 坐标系与像素映射实现说明
+
+第 1~9 层共用同一套"物理坐标 → 像素坐标"映射，保证各层图像可以逐像素对齐比对。
+该坐标系由三个内部函数共同实现：`ComputeGridImageGeometry()`、`WorldToPixel()`、`AddBackGround()`。
+
+## 13.1 统一坐标系约定
+
+- 物理坐标：X 为前向（正前方），Y 为左右（左为 +Y）；
+- 网格索引：`col` 沿 X 方向（前向），`row` 沿 Y 方向（左右）；
+- 像素方向：X+ 向右，Y+（左侧）向上；
+- 车前盲区：物理 `x ∈ [0, blind_dist_x)` 不参与建网格，在图像上单独占一段像素宽度。
+
+## 13.2 ComputeGridImageGeometry() —— 计算图像几何
+
+```cpp
+void DebugViewer::ComputeGridImageGeometry(const ElevationGridConfig& gridCfg,
+                                           int& rows, int& cols,
+                                           int& px_blind_offset,
+                                           int& img_w, int& img_h) const;
+```
+
+内部操作：
+
+1. `blind_dist_x = car_half_x + body_filter_x_threshold`：车前盲区距离（物理米）；
+2. `blind_cols = round(blind_dist_x / grid_resolution)`：盲区占用的网格列数；
+3. `px_blind_offset = blind_cols * kGridPixelScale`：盲区在图像上的像素偏移；
+4. `rows = ceil((roi_y_max - roi_y_min) / grid_resolution)`、`cols = ceil((roi_x_max - blind_dist_x) / grid_resolution)`：与算法 `m_grid_rows / m_grid_cols` 保持一致；
+5. 图像尺寸：
+   - `img_w = px_blind_offset + cols * kGridPixelScale + expand_img_w`（盲区 + 有效网格 + 右边距）
+   - `img_h = rows * kGridPixelScale + expand_img_h`（有效网格 + 上下边距）
+
+## 13.3 WorldToPixel() —— 世界坐标 → 像素坐标
+
+```cpp
+void DebugViewer::WorldToPixel(float wx, float wy, int& px, int& py,
+                               const ElevationGridConfig& gridCfg) const;
+```
+
+内部操作（先调用 `ComputeGridImageGeometry()` 拿到几何参数，再做线性映射）：
+
+```text
+px = px_blind_offset + (wx - blind_dist_x) * inv_res * kGridPixelScale + expand_img_w / 2
+
+#(rows - 1)从图像上看会导致Car(0,0)这个点上移一个grid
+py = ((rows - 1) - (wy - roi_y_min) * inv_res) * kGridPixelScale + expand_img_h / 2
+
+#现在用这个
+float py_f = ((rows) - (wy - gridCfg.roi_y_min) * inv_resolution) * kGridPixelScale
+                 + (expand_img_h / 2);
+```
+
+其中 `inv_res = 1 / grid_resolution`。
+
+- 公式一：物理 X（前向）减去盲区距离后，按 `inv_res * kGridPixelScale`（像素/米）映射到像素列，再加左边距 `expand_img_w / 2`；
+- 公式二：物理 Y 先通过 `(wy - roi_y_min) * inv_res` 得到行号，再用 `(rows - 1) - 行号` 翻转，使图像顶部为 Y+（左侧）、底部为 Y-（右侧），最后加 `expand_img_h / 2`；
+- 与第 1~6 层绘制 Grid Cell 的 `GridToPixel()` 完全一致，保证包围盒/点云与网格 Cell 逐像素对齐；
+- 输出前对 `px / py` 进行 `[0, img_w-1] × [0, img_h-1]` 边界裁剪，防止越界绘制。
+
+## 13.4 AddBackGround() —— 绘制坐标轴与网格背景
+
+```cpp
+void DebugViewer::AddBackGround(cv::Mat& image, const int img_w, const int img_h,
+                                const ElevationGridConfig& gridCfg);
+```
+
+内部操作：
+
+1. 计算物理原点 `(0, 0)` 的像素位置：
+   - `px_origin_x = (0 - roi_x_min) * inv_res * kGridPixelScale + expand_img_w / 2`
+   - `px_origin_y = round((0 - roi_y_min) * inv_res) * kGridPixelScale + expand_img_h / 2`
+2. 绘制坐标轴（红色）：X 轴向右（标注 `Col++ (X+)`），Y 轴向上（标注 `Row++ (Y+ Left)`），并在原点画实心圆与 `Car(0,0)` 标签；
+3. 按物理坐标循环绘制 1 米大网格线（灰色）：水平线沿物理 Y 从 `roi_y_max` 递减到 `roi_y_min`，垂直线沿物理 X 从 `roi_x_min` 递增到 `roi_x_max`；
+4. 每条网格线在坐标轴处绘制刻度与物理坐标标签（如 `0.0 / 1.0 / 2.0`）；
+5. 网格线按 `(phys - roi_min) * inv_res * scale` 计算，与 `WorldToPixel()` / `GridToPixel()` 的 Cell 边界对齐，因此网格线恰好落在整米 Cell 边界上，便于读数。
+
+> 注意：第 1~6 层在画完 Cell 后调用 `AddBackGround()`（网格线覆盖在 Cell 上）；
+> 第 7~9 层（BoundingBox / Overlay / TrackerOverlay）先调用 `AddBackGround()` 再画包围框/点云，
+> 避免灰色网格线遮挡障碍物数据。
+
+------
+
+# 14. show 模式窗口布局（初始尺寸与自动排布）
+
+`ShowOrSave()` 在 `viewCfg.show` 为真时创建 OpenCV 窗口。为避免启动时窗口过小、
+以及多个窗口（例如 Overlay 与 TrackerOverlay 同时开启）重叠，DebugViewer 对窗口做了
+**初始尺寸固定**与**自动上下排布**：
+
+- `CountShownWindows()`：统计本帧开启 show 的窗口总数（依据 `SELF_DEBUG_CONFIG` 中各层配置的 enable && show）；
+- `LayoutWindow()`：仅窗口首次创建时执行一次——
+  1. 按屏幕可用区域（`m_layoutMaxW × m_layoutMaxY`，默认 `1900 × 1000`，适配 1920×1080 屏幕）等比缩放图像（只缩小不放大），并用 `cv::resizeWindow()` 固定初始窗口大小，避免启动时窗口过小；
+  2. 用 `cv::moveWindow()` 将窗口放到自动布局位置，多个窗口按“一上一下”垂直排布、互不重叠（Overlay 在上、TrackerOverlay 在下）；
+  3. 垂直空间按窗口总数均分，保证所有开启的窗口同时可见；
+- 首次定位后不再干预，用户仍可手动拖动 / 缩放窗口。
+
+布局参数位于 `DebugViewer.h` 的成员变量中（`m_layoutMaxW` / `m_layoutMaxY` / `m_windowGap` 等），
+可按实际屏幕分辨率调整。

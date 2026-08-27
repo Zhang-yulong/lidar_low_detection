@@ -30,6 +30,7 @@ struct STR_LIDAR_CONFIG_INFO{
 struct STR_ALL_LIDAR_CONFIG_INFO{
 	STR_LIDAR_CONFIG_INFO toMainLidarInfo;
 	STR_LIDAR_CONFIG_INFO toCarInfo;
+	float fLidar2GridHeadingCorrectionDeg = 0.0f;  // 主雷达系(Grid) vs 融合IMU系 航向补偿(度)，由 fLidar2Vehicle_Heading 计算
 };
 
 #pragma pack(push, 1)

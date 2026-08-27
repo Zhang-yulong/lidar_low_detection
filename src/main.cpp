@@ -9,6 +9,9 @@
 #include "SuTengDriver.h"
 #include "UdpCommunication.h"
 #include "ulog_api.h"
+#include "localization_manager.h"
+#include "pcap_localization_feed.h"
+#include "coordinate_transformer.h"
 
 
 using namespace Lidar_Low_Detection;
@@ -28,13 +31,17 @@ namespace Lidar_Low_Detection {
 // std::string Yaml_Path = "/home/zyl/echiev_low_lidar_detection/config/debug_config.yaml";
 std::string Yaml_Path = "/etc/echiev/low_detection/debug_config.yaml";
 
-STR_LIDAR_CONFIG *strToMainLidarConfig = (STR_LIDAR_CONFIG *)malloc(sizeof(STR_LIDAR_CONFIG));
-STR_LIDAR_CONFIG *strToCarConfig = (STR_LIDAR_CONFIG *)malloc(sizeof(STR_LIDAR_CONFIG));
+std::unique_ptr<STR_LIDAR_CONFIG> strToMainLidarConfig = std::make_unique<STR_LIDAR_CONFIG>();
+std::unique_ptr<STR_LIDAR_CONFIG> strToCarConfig = std::make_unique<STR_LIDAR_CONFIG>();
 
 STR_FUSIONLOC g_strFusionLocation;
 pthread_mutex_t g_SpeedMutex;
 pthread_mutex_t g_ThreadMutex;
 float  g_fSpeed = 0.0;
+
+// pcap 回放模式下：从同一 pcap 解析 9110 定位报文喂给 LocalizationManager
+// （rs_driver 回放不经过网络栈，OpenfusionLocMCClient 的 9110 socket 收不到数据）
+PcapLocalizationFeed g_pcapLocFeed;
 
 // ================================================================
 // 信号处理：SIGINT (Ctrl+C) 优雅退出
@@ -97,19 +104,19 @@ static void* SignalThread(void* Arg)
 
 
 
-void setSpeedInfo(float fSpeed)
-{
-	pthread_mutex_lock( &g_SpeedMutex);
-	g_fSpeed = fSpeed;
-	pthread_mutex_unlock( &g_SpeedMutex );
-}
-void speed_set(unsigned char *pData, int Len)
-{
-    STR_CAN_SPEED canSpeed;
-	memset(&canSpeed, 0, sizeof(STR_CAN_SPEED));
-	memcpy(&canSpeed, pData, Len);
-	setSpeedInfo(canSpeed.fCanSpeed);
-}
+// void setSpeedInfo(float fSpeed)
+// {
+// 	pthread_mutex_lock( &g_SpeedMutex);
+// 	g_fSpeed = fSpeed;
+// 	pthread_mutex_unlock( &g_SpeedMutex );
+// }
+// void speed_set(unsigned char *pData, int Len)
+// {
+//     STR_CAN_SPEED canSpeed;
+// 	memset(&canSpeed, 0, sizeof(STR_CAN_SPEED));
+// 	memcpy(&canSpeed, pData, Len);
+// 	setSpeedInfo(canSpeed.fCanSpeed);
+// }
 
 void SetFusionLocation (STR_FUSIONLOC*  pstrFusionLocation )
 {
@@ -130,15 +137,14 @@ int GetFusionLocation (STR_FUSIONLOC*  pstrFusionLocation)
 }
 void fusionLoc_set(unsigned char *pData, int Len)
 {
-	//API_LOG (LOG_ERR, "rev fusionLoc data, len=%d \n", Len);
-
 	if ( Len >= sizeof(STR_FUSIONLOC) )
 	{
 		STR_FUSIONLOC* pstrFusionLocation = (STR_FUSIONLOC*)pData;
 		SetFusionLocation( pstrFusionLocation );
+		// 通知 LocalizationManager（内部解析 STR_FUSIONLOC 并记录新鲜度）
+		Lidar_Low_Detection::LocalizationManager::instance().onDataReceived(pData, Len);
 		//printf ("cccccccc rev fusionLoc data, len ok =%d \n", Len);
-		//++g_fusionlocrev_times;
-		//store_loc ((STR_FUSION_LOCATION*)pData);
+		
 	} else{
 		printf ("cccccccc rev fusionLoc data, len not ok =%d \n", Len);
 	}
@@ -150,93 +156,83 @@ int CommInit(const SELF_DEBUG_CONFIG &config)
 {
 	ConfigReadError iRet_1, iRet_2;
 
-	if(NULL == strToMainLidarConfig){
-		LOG_RAW("strToMainLidarConfig malloc error\n");
-		return -1;
-	}
-	if(NULL == strToCarConfig){
-		LOG_RAW("strToCarConfig malloc error\n");
-		return -1;
-	}
-
-
 	if(config.pathTolidarTransformConfig == 0){
 		const char *PathToMainLidarConfig = "/home/zyl/echiev_lidar_curb_detection/config/小车11上的雷达配置文件/lsCH64w_front/lidar.cfg";
 		const char *PathToCarConfig = "/home/zyl/echiev_lidar_curb_detection/config/小车11上的雷达配置文件/lidar.cfg";
-		iRet_1 = readConfigFile(strToMainLidarConfig, PathToMainLidarConfig);
-		iRet_2 = readConfigFile(strToCarConfig, PathToCarConfig);
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
 	else if(config.pathTolidarTransformConfig == 1){
 		const char *PathToMainLidarConfig = "/etc/echiev/lidar/lsCH64w_front/lidar.cfg";
 		const char *PathToCarConfig = "/etc/echiev/lidar/lidar.cfg";
-		iRet_1 = readConfigFile(strToMainLidarConfig, PathToMainLidarConfig);
-		iRet_2 = readConfigFile(strToCarConfig, PathToCarConfig);
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
 	else if(config.pathTolidarTransformConfig == 2){
 		const char *PathToMainLidarConfig = "/home/zyl/echiev_lidar_curb_detection/config/佛山T1上的雷达配置文件/lsCH64w_front/lidar.cfg";
 		const char *PathToCarConfig = "/home/zyl/echiev_lidar_curb_detection/config/佛山T1上的雷达配置文件/lidar.cfg";
-		iRet_1 = readConfigFile(strToMainLidarConfig, PathToMainLidarConfig);
-		iRet_2 = readConfigFile(strToCarConfig, PathToCarConfig);
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
 	else if (config.pathTolidarTransformConfig == 3) {
 		const char *PathToMainLidarConfig = "/etc/echiev/lidar/lsCH64w_front/lidar.cfg";
 		const char *PathToCarConfig = "/etc/echiev/lidar/lidar.cfg";
-		iRet_1 = readConfigFile(strToMainLidarConfig, PathToMainLidarConfig);
-		iRet_2 = readConfigFile(strToCarConfig, PathToCarConfig);
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
 	else if (config.pathTolidarTransformConfig == 4) {
 		const char *PathToMainLidarConfig = "/home/zyl/echiev_low_lidar_detection/config/T05-lidar-shenzhen/rsairy_right_front/lidar.cfg";
 		const char *PathToCarConfig = "/home/zyl/echiev_low_lidar_detection/config/T05-lidar-shenzhen/lidar.cfg";
-		iRet_1 = readConfigFile(strToMainLidarConfig, PathToMainLidarConfig);
-		iRet_2 = readConfigFile(strToCarConfig, PathToCarConfig);
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
 	else if (config.pathTolidarTransformConfig == 5) {
 		const char *PathToMainLidarConfig = "/home/zyl/echiev_low_lidar_detection/config/T05-lidar-shenzhen/rsairy_left_front/lidar.cfg";
 		const char *PathToCarConfig = "/home/zyl/echiev_low_lidar_detection/config/T05-lidar-shenzhen/lidar.cfg";
-		iRet_1 = readConfigFile(strToMainLidarConfig, PathToMainLidarConfig);
-		iRet_2 = readConfigFile(strToCarConfig, PathToCarConfig);
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
 	else if (config.pathTolidarTransformConfig == 6) {
 		const char *PathToMainLidarConfig = "/home/zyl/echiev_low_lidar_detection/config/T05-lidar-hainan/rsairy_right_front/lidar.cfg";
 		const char *PathToCarConfig = "/home/zyl/echiev_low_lidar_detection/config/T05-lidar-hainan/lidar.cfg";
-		iRet_1 = readConfigFile(strToMainLidarConfig, PathToMainLidarConfig);
-		iRet_2 = readConfigFile(strToCarConfig, PathToCarConfig);
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
 	else if (config.pathTolidarTransformConfig == 7) {
 		const char *PathToMainLidarConfig = "/home/zyl/echiev_low_lidar_detection/config/T05-lidar-hainan/rsairy_left_back/lidar.cfg";
 		const char *PathToCarConfig = "/home/zyl/echiev_low_lidar_detection/config/T05-lidar-hainan/lidar.cfg";
-		iRet_1 = readConfigFile(strToMainLidarConfig, PathToMainLidarConfig);
-		iRet_2 = readConfigFile(strToCarConfig, PathToCarConfig);
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
 	else if(config.pathTolidarTransformConfig == 8){
 		const char *PathToMainLidarConfig = "/etc/echiev/lidar/rsairy_right_front/lidar.cfg";
 		const char *PathToCarConfig = "/etc/echiev/lidar/lidar.cfg";
-		iRet_1 = readConfigFile(strToMainLidarConfig, PathToMainLidarConfig);
-		iRet_2 = readConfigFile(strToCarConfig, PathToCarConfig);
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
 	else if(config.pathTolidarTransformConfig == 9){
 		const char *PathToMainLidarConfig = "/etc/echiev/lidar/rs16p_right_front/lidar.cfg";
 		const char *PathToCarConfig = "/etc/echiev/lidar/lidar.cfg";
-		iRet_1 = readConfigFile(strToMainLidarConfig, PathToMainLidarConfig);
-		iRet_2 = readConfigFile(strToCarConfig, PathToCarConfig);
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
 	else if(config.pathTolidarTransformConfig == 10){
 		const char *PathToMainLidarConfig = "/home/zyl/echiev_low_lidar_detection/config/E1-lidar-hainan/rs16p_right_front/lidar.cfg";
 		const char *PathToCarConfig = "/home/zyl/echiev_low_lidar_detection/config/E1-lidar-hainan/lidar.cfg";
-		iRet_1 = readConfigFile(strToMainLidarConfig, PathToMainLidarConfig);
-		iRet_2 = readConfigFile(strToCarConfig, PathToCarConfig);
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
 	else if(config.pathTolidarTransformConfig == 11){
 		const char *PathToMainLidarConfig = "/home/zyl/echiev_low_lidar_detection/config/T05-lidar-shenzhen/lidar.cfg";
 		const char *PathToCarConfig = "/home/zyl/echiev_low_lidar_detection/config/T05-lidar-shenzhen/lidar.cfg";
-		iRet_1 = readConfigFile(strToMainLidarConfig, PathToMainLidarConfig);
-		iRet_2 = readConfigFile(strToCarConfig, PathToCarConfig);
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
 	else if(config.pathTolidarTransformConfig == 12){
 		const char *PathToMainLidarConfig = "/etc/echiev/lidar/lidar.cfg";
 		const char *PathToCarConfig = "/etc/echiev/lidar/lidar.cfg";
-		iRet_1 = readConfigFile(strToMainLidarConfig, PathToMainLidarConfig);
-		iRet_2 = readConfigFile(strToCarConfig, PathToCarConfig);
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
 	else{
 		LOG_RAW("**** 2 **** [Error]read 《debug_config.yaml》 中的 pathTolidarTransformConfig 参数错误 \n");
@@ -288,17 +284,26 @@ int CommInit(const SELF_DEBUG_CONFIG &config)
 	Lidar_set_callback(Lidar_set);	
 	*/
 	
-	/*
-	pthread_mutex_init(&g_ThreadMutex, NULL);
-	if(OpenfusionLocMCClient(FUSIONLOC_MC_PORT, 0) < 0){
-		LOG_RAW("**** 6 **** OpenfusionLocMCClient fail.\n");
-		return -1;
+	/*接入定位模块
+	 * 仅在 pcap / online 模式下启用；pcd 单帧调试不启用（见迁移设计文档第 6/9 章）
+	 * 需同时满足: mapFilterModel(HDMap总开关) && Localization.enable && 非pcd模式
+	 *
+	 * 降级策略（见迁移文档第 27/28 章）：定位订阅失败 不退出 低矮检测。
+	 * 定位库(OpenfusionLocMCClient)初始化失败 → 不订阅，HDMap 过滤自动关闭，
+	 * 低矮障碍物检测照常运行。
+	 */
+	if( config.mapFilterModel && config.localizationEnable &&
+	    (config.pcapRunningModel || config.onlineModel) && !config.pcdRunningModel){
+		pthread_mutex_init(&g_ThreadMutex, NULL);
+		if(OpenfusionLocMCClient(FUSIONLOC_MC_PORT, 0) < 0){
+			LOG_RAW("**** 6 **** OpenfusionLocMCClient fail. localization disabled (degraded, low-obstacle detection continues).\n");
+			// 降级：返回成功，继续低矮检测（HDMap 过滤因定位无效自动关闭）
+		}
+		else{
+			LOG_RAW("OpenfusionLocMCClient successful.\n");
+			fusionLoc_set_callback(fusionLoc_set);
+		}
 	}
-	else{
-		LOG_RAW("OpenfusionLocMCClient successful.\n");
-	}
-	fusionLoc_set_callback(fusionLoc_set);
-	*/
 
 	/*
 	if(OpenCameraLaneMCServer(CvLane_MC_PORT, CvLane_MC_INTERVAL, 0X01) < 0){ 
@@ -317,7 +322,7 @@ void Comm_Exit(void)
 	// CloseTimeMCClient();
 	// CloseVSpdMCClient();
 	// CloseLidarMCClient();
-	// ClosefusionLocMCClient();
+	ClosefusionLocMCClient();
 	// CloseCameraLaneMCServer();
 	ulog_deinit();
 }
@@ -408,7 +413,17 @@ STR_ALL_LIDAR_CONFIG_INFO GetAllTransformConfigInfo(const STR_LIDAR_CONFIG *toMa
 	}
 
 
-	return {toMainLidarInfo, toCarInfo};
+	// 【HDMap 航向补偿】主雷达系(Grid) 与 融合IMU系 前向夹角 = 90° + fLidar2Vehicle_Heading
+	// （点云 R_Combined 净旋转 = 90°+fLidar2Vehicle_Heading，见 docs/HDMap可视化.md 第五节）
+	float fLidar2GridHeadingCorrectionDeg = 90.0f + fAngle_ToCar;
+	LOG_RAW("fLidar2GridHeadingCorrectionDeg = %.4f  ( = 90 + fLidar2Vehicle_Heading )\n",
+	        fLidar2GridHeadingCorrectionDeg);
+
+	STR_ALL_LIDAR_CONFIG_INFO retInfo;
+	retInfo.toMainLidarInfo = toMainLidarInfo;
+	retInfo.toCarInfo       = toCarInfo;
+	retInfo.fLidar2GridHeadingCorrectionDeg = fLidar2GridHeadingCorrectionDeg;
+	return retInfo;
 }
 
 
@@ -457,6 +472,21 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
+	// 配置 LocalizationManager（与 CommInit 中的定位订阅开关保持一致）
+	{
+		const bool loc_enable = (strOpencvConfig.mapFilterModel != 0) &&
+		                        (strOpencvConfig.localizationEnable != 0) &&
+		                        (strOpencvConfig.pcapRunningModel || strOpencvConfig.onlineModel) &&
+		                        !strOpencvConfig.pcdRunningModel;
+		LocalizationManager::instance().configure(
+			loc_enable,
+			strOpencvConfig.localizationTimeoutMs,
+			strOpencvConfig.localizationDebugEnable != 0,
+			strOpencvConfig.localizationDebugX,
+			strOpencvConfig.localizationDebugY,
+			strOpencvConfig.localizationDebugHeading);
+	}
+
 	// 1. 设置信号屏蔽集
 	sigset_t sigset;
 	sigemptyset(&sigset);
@@ -467,7 +497,13 @@ int main(int argc, char *argv[])
 	pthread_sigmask(SIG_BLOCK, &sigset, nullptr);
 
 	
-	STR_ALL_LIDAR_CONFIG_INFO strAllLidarTransformInfo = GetAllTransformConfigInfo(strToMainLidarConfig, strToCarConfig);
+	STR_ALL_LIDAR_CONFIG_INFO strAllLidarTransformInfo = GetAllTransformConfigInfo(strToMainLidarConfig.get(), strToCarConfig.get());
+
+	// 【HDMap 航向补偿】由 lidar.cfg fLidar2Vehicle_Heading 自动计算（90°+fLidar2Vehicle_Heading），
+	// 注入 CoordinateTransformer：可视化与过滤统一应用（勿写死，换雷达自动适配）
+	CoordinateTransformer::setGridHeadingOffsetDeg(strAllLidarTransformInfo.fLidar2GridHeadingCorrectionDeg);
+	LOG_RAW("CoordinateTransformer gridHeadingOffset = %.4f deg (from lidar.cfg)\n",
+	        CoordinateTransformer::gridHeadingOffsetDeg());
 
    	// LeiShenDrive lsDrive(strOpencvConfig, strAllLidarTransformInfo);
 	// lsDrive.Init();
@@ -476,6 +512,21 @@ int main(int argc, char *argv[])
 	SutengDriver stDriver(strOpencvConfig, strAllLidarTransformInfo);
 	stDriver.Init();
 	stDriver.Start();
+
+	// pcap 回放模式下：独立线程从同一 pcap 解析 9110 定位报文喂给 LocalizationManager
+	// （rs_driver 回放不经过内核网络栈，9110 socket 收不到数据；在线模式 9110 由真实
+	//  组播送入 OpenfusionLocMCClient，无需本模块）
+	if (strOpencvConfig.pcapRunningModel &&
+	    strOpencvConfig.mapFilterModel &&
+	    strOpencvConfig.localizationEnable &&
+	    !strOpencvConfig.localizationDebugEnable)
+	{
+		if (!g_pcapLocFeed.start(strOpencvConfig.rs_pcapPath, 1.0))
+		{
+			LOG_RAW("**** pcap 9110 feed start failed: %s\n",
+			        strOpencvConfig.rs_pcapPath.c_str());
+		}
+	}
 
 	// 【修复2】驱动启动后再创建信号线程
     std::atomic<bool> TerminateFlag{false};
@@ -562,6 +613,7 @@ int main(int argc, char *argv[])
     // lsDrive.Free();
 	stDriver.Stop();
 	stDriver.Free();
+	g_pcapLocFeed.stop();   // 回收 pcap 9110 喂入线程
 	Comm_Exit();
 	
     return 0;

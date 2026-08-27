@@ -98,6 +98,39 @@ int SutengDriver::Init(){
     m_debugViewer = std::make_unique<DebugViewer>(*m_ST_Config);
     m_pElevationMapGroundFilter->SetDebugViewer(m_debugViewer.get());
 
+    // ========================================================================
+    // HDMap + 定位（迁移设计文档 Phase 1：Cluster 级软约束）
+    //   启用条件（缺一不可，均可配置关闭，见迁移文档第 27/30 章）：
+    //     mapFilterModel != 0   （HdmapFilter.mapFilterModel）
+    //     localizationEnable != 0（Localization.enable）
+    //     !pcdRunningModel       （pcd 单帧调试不启用）
+    // ========================================================================
+    m_hdmapEnabled = (m_ST_Config->mapFilterModel != 0) &&
+                     (m_ST_Config->localizationEnable != 0) &&
+                     !m_ST_Config->pcdRunningModel;
+
+    if (m_hdmapEnabled)
+    {
+        // 启动时加载一次地图
+        m_hdmapManager.loadMap(m_ST_Config->mapPath);
+
+        HDMapFilter::Config fcfg;
+        fcfg.enabled        = true;
+        fcfg.filterMode     = m_ST_Config->hdmapFilterMode;
+        fcfg.expandDistance = m_ST_Config->hdmapExpandDistance;
+        fcfg.logEveryN      = m_ST_Config->hdmapLogEveryN;
+        m_hdmapFilter.configure(fcfg);
+
+        LOG_RAW("[HDMap] enabled (mapPath=%s)\n", m_ST_Config->mapPath.c_str());
+    }
+    else
+    {
+        m_hdmapFilter.configure(HDMapFilter::Config());
+        LOG_RAW("[HDMap] disabled (mapFilterModel=%d localizationEnable=%d pcd=%d)\n",
+               m_ST_Config->mapFilterModel, m_ST_Config->localizationEnable,
+               m_ST_Config->pcdRunningModel);
+    }
+
     if(m_ST_Config->pcapRunningModel == 1){
         m_rs_param.input_type = InputType::PCAP_FILE;
         m_rs_param.input_param.pcap_path = m_ST_Config->rs_pcapPath;  ///< Set the pcap file directory
@@ -108,6 +141,7 @@ int SutengDriver::Init(){
     }
 
     if(m_ST_Config->onlineModel){
+        // m_rs_param.input_param.host_address = m_ST_Config->selfComputerIP;
         m_rs_param.input_param.group_address = m_ST_Config->groupIP;
     }
     
@@ -869,6 +903,11 @@ void SutengDriver::ProcessPcapCloud(){
         // Eigen::Matrix4f R_CombinedTransMatrix = Eigen::Matrix4f::Identity();
     }
 
+    //定位+地图容器
+    bool have_pose = false;
+    LocalizationManager::Pose loc_pose;
+    std::vector<std::vector<STR_POINT2F>> hdmap_polygons;
+
     while(m_running)
     {  
         unsigned long long titleTime_ms = GetCurrentTimestamp();
@@ -881,7 +920,6 @@ void SutengDriver::ProcessPcapCloud(){
         {
             m_debugViewer->NewFrame();
         }
-
 
 
         std::shared_ptr<PointCloudMsg> msg = stuffed_cloud_queue.popWait();
@@ -903,7 +941,10 @@ void SutengDriver::ProcessPcapCloud(){
         LOG_RAW("----------------------\n");
         LOG_RAW("[%s][%lld]Loop Start\n", titleTime_string.c_str(), titleTime_ms);
 
-
+        if(m_ST_Config->pcapRunningModel){
+            LOG_RAW("[pcap rec time]: %lld \n" ,rec_timestamp_ms);
+        }
+        
         if(m_debugViewer->GetFrameCountValue() ==1){
             g_previousTimestamp.store(rec_timestamp_ms, std::memory_order_relaxed);
             LOG_RAW("第一次循环，跳过！！！！\n");
@@ -969,30 +1010,46 @@ void SutengDriver::ProcessPcapCloud(){
         auto t_end_4_ = std::chrono::steady_clock::now();
         auto duration_4 = std::chrono::duration_cast<std::chrono::milliseconds>(t_end_4_ - t_end_3_);
 
-        
-        if (success)
-        {   
-            // std::cout <<" 接收数据耗时 " << duration_1.count() << " ms\n"
-            //         <<" 坐标转换耗时 " << duration_2.count() << " ms\n"
-            //         << " APMF 耗时 "<< duration_3.count() << " ms\n"
-            //         << " Total Ground Filter completed in " << duration.count() << " ms\n"
-            //         << "  Ground points:    " << pGroundCloud->size() << "\n"
-            //         << "  Obstacle points:  " << pObstacleCloud->size() << "\n"
-            //         << "*****Obstacle clusters: " << outputClusters.size() << std::endl;
+
+        // ── HDMap 过滤：Cluster 级软约束（Cluster 生成后、Tracker 之前）──
+        // 迁移设计文档 Phase 1：只打标签（in_road/map_valid/map_confidence），不删除 Cluster。
+        // 定位无效 / 地图未加载 / 查询失败 → HDMapFilter 内部自动降级为"保留全部"。
+        if (m_hdmapEnabled)
+        {
+            // LocalizationManager::Pose loc_pose;
+            // LocalizationManager::instance().getPose(loc_pose);
+
+            have_pose = LocalizationManager::instance().getPose(loc_pose);
+
+            if (have_pose && loc_pose.valid)
+            {
+                m_hdmapManager.buildDrivablePolygons(loc_pose.x, loc_pose.y, hdmap_polygons);
+            }
+
+            m_debugViewer->DrawClusterOverlay(*pGroundCloud, *pObstacleCloud,outputClusters,m_pElevationMapGroundFilter->GetConfig(),hdmap_polygons,loc_pose);
 
 
+            // 每帧定位诊断：点云帧墙钟时间戳 vs 定位新鲜度（墙钟）与定位模块时间戳
+            // loc_age_ms = 当前墙钟 - 最近一次收到定位的墙钟；定位100Hz时一般 ≤10ms。
+            // 注意：loc_module_ts(ullTimestampModule) 与 cloud_ts_ms 不是同一时间基准，
+            // 要看"拿到一帧与拿到一帧定位的时间差"应以 loc_age_ms 为准。
+            LOG_RAW("[LocDiag] cloud_ts_ms=%llu loc_valid=%d loc_module_ts=%llu loc_age_ms=%llu loc_n=%llu\n",
+                    rec_timestamp_ms,
+                    (int)loc_pose.valid,
+                    (unsigned long long)loc_pose.timestamp_ms,
+                    (unsigned long long)LocalizationManager::instance().lastUpdateAgeMs(),
+                    (unsigned long long)LocalizationManager::instance().receivedCount());
+
+            m_hdmapFilter.filterClusters(outputClusters, loc_pose, m_hdmapManager, rec_timestamp_ms);
+        }
+        else{
+            m_debugViewer->DrawClusterOverlay(*pGroundCloud, *pObstacleCloud,outputClusters,m_pElevationMapGroundFilter->GetConfig(),hdmap_polygons,loc_pose);
         }
 
-        // // ── 聚类 ID（每帧临时，会跳变）──
-        // std::cout <<" ***********"<<std::endl;
-        // for(size_t i = 0; i < outputClusters.size(); i++)
-        // {
-        //     std::cout << "Cluster id: " << outputClusters[i].id << ": "
-        //                 << "Center(" << outputClusters[i].center_x << ", "
-        //                 << outputClusters[i].center_y << ", "
-        //                 << outputClusters[i].center_z << "), "
-        //                 << std::endl;
-        // }
+
+
+
+
 
         // ── 跟踪器：为障碍物分配稳定的跨帧 ID（从 9999 起始）──
         {
@@ -1012,6 +1069,39 @@ void SutengDriver::ProcessPcapCloud(){
                 //           << std::endl;
                 
                 LOG_RAW("Track id: %d: Center(%.2f, %.2f, %.2f), age=%d\n", track.id, track.pos_x, track.pos_y, track.pos_z, track.age);
+            }
+        }
+
+        // ── Debug: 第九层 跟踪结果点云叠加图 (TrackedObstacle 版本) ──
+        // 需要 DebugViewer 配置 TrackerOverlay.enable=1 才会绘制
+        if (m_debugViewer)
+        {
+            // std::vector<std::vector<STR_POINT2F>> hdmap_polygons;
+            // LocalizationManager::Pose loc_pose;
+            // bool have_pose = false;
+
+            // if (m_hdmapEnabled)
+            // {
+            //     have_pose = LocalizationManager::instance().getPose(loc_pose);
+            //     if (have_pose && loc_pose.valid)
+            //     {
+            //         m_hdmapManager.buildDrivablePolygons(loc_pose.x, loc_pose.y, hdmap_polygons);
+            //     }
+            // }
+
+            if (have_pose && loc_pose.valid && !hdmap_polygons.empty())
+            {
+                m_debugViewer->DrawAllOverlay(*pGroundCloud, *pObstacleCloud,
+                                           m_tracker.vtrackings,
+                                           m_pElevationMapGroundFilter->GetConfig(),
+                                           hdmap_polygons,
+                                           loc_pose);
+            }
+            else
+            {
+                m_debugViewer->DrawTrackOverlay(*pGroundCloud, *pObstacleCloud,
+                                           m_tracker.vtrackings,
+                                           m_pElevationMapGroundFilter->GetConfig());
             }
         }
 
@@ -1118,52 +1208,54 @@ void SutengDriver::ConvertClustersToTrackedObstacles(
 
     for (const auto& cluster : clusters)
     {
-        TrackedObstacle obs;
+        if(cluster.in_road || !m_hdmapEnabled){
+            TrackedObstacle obs;
 
-        obs.cluster_id = cluster.id;
+            obs.cluster_id = cluster.id;
 
-        // 注意: 这里不设置 id，id 由 SimpleTracker::update() 统一分配（从 9999 起始）
-        obs.id = -1;
+            // 注意: 这里不设置 id，id 由 SimpleTracker::update() 统一分配（从 9999 起始）
+            obs.id = -1;
 
-        if (cluster.has_obb)
-        {
-            obs.pos_x = cluster.obb_center_x;
-            obs.pos_y = cluster.obb_center_y;
-            obs.depth  = cluster.obb_length;
-            obs.width  = cluster.obb_width;
+            if (cluster.has_obb)
+            {
+                obs.pos_x = cluster.obb_center_x;
+                obs.pos_y = cluster.obb_center_y;
+                obs.depth  = cluster.obb_length;
+                obs.width  = cluster.obb_width;
 
-            obs.corners[0] = cluster.obb_corners[0];
-            obs.corners[1] = cluster.obb_corners[1];
-            obs.corners[2] = cluster.obb_corners[2];
-            obs.corners[3] = cluster.obb_corners[3];
+                obs.corners[0] = cluster.obb_corners[0];
+                obs.corners[1] = cluster.obb_corners[1];
+                obs.corners[2] = cluster.obb_corners[2];
+                obs.corners[3] = cluster.obb_corners[3];
+            }
+            else
+            {
+                obs.pos_x = cluster.center_x;
+                obs.pos_y = cluster.center_y;
+                obs.depth  = cluster.length;
+                obs.width  = cluster.width;
+
+                obs.corners[0] = { cluster.min_x, cluster.min_y };
+                obs.corners[1] = { cluster.max_x, cluster.min_y };
+                obs.corners[2] = { cluster.max_x, cluster.max_y };
+                obs.corners[3] = { cluster.min_x, cluster.max_y };
+            }
+
+            obs.pos_z  = cluster.center_z;
+            obs.height = cluster.height;
+            obs.age    = 0;
+            obs.lastSeen = 0;
+
+            obs.vx = 0.0;
+            obs.vy = 0.0;
+
+
+            // Translation/Rotation 暂不填充
+            memset(obs.Translation, 0, sizeof(obs.Translation));
+            memset(obs.Rotation, 0, sizeof(obs.Rotation));
+
+            out.push_back(obs);
         }
-        else
-        {
-            obs.pos_x = cluster.center_x;
-            obs.pos_y = cluster.center_y;
-            obs.depth  = cluster.length;
-            obs.width  = cluster.width;
-
-            obs.corners[0] = { cluster.min_x, cluster.min_y };
-            obs.corners[1] = { cluster.max_x, cluster.min_y };
-            obs.corners[2] = { cluster.max_x, cluster.max_y };
-            obs.corners[3] = { cluster.min_x, cluster.max_y };
-        }
-
-        obs.pos_z  = cluster.center_z;
-        obs.height = cluster.height;
-        obs.age    = 0;
-        obs.lastSeen = 0;
-
-        obs.vx = 0.0;
-        obs.vy = 0.0;
-
-
-        // Translation/Rotation 暂不填充
-        memset(obs.Translation, 0, sizeof(obs.Translation));
-        memset(obs.Rotation, 0, sizeof(obs.Rotation));
-
-        out.push_back(obs);
     }
 }
 

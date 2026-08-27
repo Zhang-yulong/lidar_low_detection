@@ -19,7 +19,8 @@ find_package(OpenCV REQUIRED)
 
 
 # set(Eigen3_DIR "/home/zyl/3rdparty/eigen-3.3.7/cmake")
-# find_package(Eigen3 REQUIRED)
+set(Eigen3_DIR ${3rdparty}/eigen/share/eigen3/cmake)
+find_package(Eigen3 REQUIRED)
 
 find_package(VTK)
 find_package(PCL 1.8 COMPONENTS common visualization io surface segmentation REQUIRED)
@@ -32,9 +33,9 @@ INCLUDE_DIRECTORIES(
 # 现代 CMake 推荐做法：为目标精确指定头文件路径
 # target_include_directories( low_detection PRIVATE
 
-    # ${3rdparty}/comm_2.7.1/include
+    ${3rdparty}/comm/comm_2.7.1/include
 
-    ${3rdparty}/comm/comm_2.6.2/include
+    # ${3rdparty}/comm/comm_2.6.2/include
     ${3rdparty}/libconfig/include
     ${3rdparty}/ulog-old/include
     ${3rdparty}/eigen/include/eigen3
@@ -48,11 +49,12 @@ INCLUDE_DIRECTORIES(
     ./common
     ./ls_driver/Include
     ./driver
-    # ${EIGEN3_INCLUDE_DIR}
+    ./mapfilter
+    ${EIGEN3_INCLUDE_DIR}
 )
 
-# LINK_DIRECTORIES("${3rdparty}/comm_2.7.1/lib")
-LINK_DIRECTORIES("${3rdparty}/comm/comm_2.6.2/lib")
+LINK_DIRECTORIES("${3rdparty}/comm/comm_2.7.1/lib")
+# LINK_DIRECTORIES("${3rdparty}/comm/comm_2.6.2/lib")
 LINK_DIRECTORIES("${3rdparty}/libconfig/lib")
 LINK_DIRECTORIES("${3rdparty}/ulog-old/lib")
 LINK_DIRECTORIES("${3rdparty}/opencv/opencv_3.3/lib")
@@ -65,9 +67,22 @@ AUX_SOURCE_DIRECTORY(./ls_driver/Include LS)
 AUX_SOURCE_DIRECTORY(./common COMMON)    
 AUX_SOURCE_DIRECTORY(./include SRC)
 
-SET(COMM ${3rdparty}/comm/comm_2.6.2/lib/libcomm.so)
+# HDMap + 定位相关源码（显式列出，不包含 get_roi/hdmap_roi_filter/coordinate_convert_tool，
+# 它们依赖项目 A 的 comment.h/PCL/PROJ，第一阶段暂不需要）
+SET(MAPFILTER_SRC
+    ./mapfilter/read_hdmap.cpp
+    ./mapfilter/convert.cpp
+    ./mapfilter/hdmap_manager.cpp
+    ./mapfilter/coordinate_transformer.cpp
+    ./mapfilter/localization_manager.cpp
+    ./mapfilter/hdmap_filter.cpp
+    ./mapfilter/pcap_localization_feed.cpp
+)
 
-add_executable(low_detection src/main.cpp ${LS} ${SRC} ${COMMON})
+# SET(COMM ${3rdparty}/comm/comm_2.6.2/lib/libcomm.so)
+SET(COMM ${3rdparty}/comm/comm_2.7.1/lib/libcomm.so)
+
+add_executable(low_detection src/main.cpp ${LS} ${SRC} ${COMMON} ${MAPFILTER_SRC})
 
 #方法二
 
@@ -105,6 +120,7 @@ target_link_libraries(low_detection
     ${OpenCV_LIBS} 
     ${PCL_LIBRARIES} 
     
+    ${EIGEN3_LIBS}
     # # PCL库 - 使用绝对路径
     # "${3rdparty}/pcl/pcl-1.8.0/release/lib/libpcl_2d.so"
     # "${3rdparty}/pcl/pcl-1.8.0/release/lib/libpcl_common.so"
@@ -165,3 +181,15 @@ target_link_libraries(low_detection
 if(ENABLE_PCAP)
     target_link_libraries(low_detection pcap)
 endif()
+
+# ============================================================================
+# 坐标转换单元测试（vehicle <-> map 互逆性验证）
+# 运行: ./build/test_coordinate_transform
+# ============================================================================
+add_executable(test_coordinate_transform
+    ./mapfilter/test_coordinate_transform.cpp
+    ./mapfilter/coordinate_transformer.cpp
+    ./mapfilter/convert.cpp
+)
+target_include_directories(test_coordinate_transform PRIVATE ./mapfilter)
+target_link_libraries(test_coordinate_transform m)

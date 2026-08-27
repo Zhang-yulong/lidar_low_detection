@@ -9,6 +9,8 @@
 #include "DebugViewer.h"
 #include "track.h"
 #include "VisFrameBuffer.h"
+#include "hdmap_manager.h"
+#include "hdmap_filter.h"
 #include <thread>
 #include <atomic>
 #include "ReadYamlFile.h"
@@ -98,6 +100,11 @@ private:
     std::unique_ptr<DebugViewer> m_debugViewer;        // 调试可视化模块
     
     CommonGroundDetection *m_pCommonGroundDetection;
+
+    // ---- HDMap + 定位（迁移设计文档 Phase 1：Cluster 级软约束）----
+    HDMapManager  m_hdmapManager;   // HDMap 管理器（启动时加载一次，只读共享）
+    HDMapFilter   m_hdmapFilter;    // HDMap Cluster 级软约束（Cluster 后、Tracker 前）
+    bool          m_hdmapEnabled = false;  // 本实例是否启用 HDMap 过滤（可配置关闭）
 
     // 跟踪器：为障碍物分配稳定的跨帧 ID（从 9999 起始）
     SimpleTracker m_tracker;

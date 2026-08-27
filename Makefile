@@ -26,10 +26,20 @@ OBJDIR = $(ROOT)
 # 3. 源文件管理 (提取自 CMakeLists.txt)
 #----------------------------------------------------------------------------------
 # 根据 CMakeLists.txt 中的 AUX_SOURCE_DIRECTORY 定义
+# 仅纳入当前低矮检测项目真实需要的 mapfilter 子集，避免把项目 A 专用的
+# get_roi / hdmap_roi_filter 等 legacy 文件一并编译进来。
 SRC_DIRS := src ls_driver/Include common include
+MAPFILTER_SRC := \
+    mapfilter/read_hdmap.cpp \
+    mapfilter/convert.cpp \
+    mapfilter/hdmap_manager.cpp \
+    mapfilter/coordinate_transformer.cpp \
+    mapfilter/localization_manager.cpp \
+    mapfilter/hdmap_filter.cpp \
+    mapfilter/pcap_localization_feed.cpp
 
 # 查找所有 C++ 和 C 源文件
-CPP_SRCS := $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.cpp))
+CPP_SRCS := $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.cpp)) $(MAPFILTER_SRC)
 C_SRCS   := $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.c))
 
 # 将源文件映射为目标文件 (.o)
@@ -59,9 +69,10 @@ CXXFLAGS += -DLOG_CFG_FILE_PATH=\"/etc/echiev/low_detection/ulog.cfg\"
 INCLUDES := \
     -I$(ROOT)/include \
     -I$(ROOT)/common \
+    -I$(ROOT)/mapfilter \
     -I$(ROOT)/ls_driver/Include \
     -I$(ROOT)/driver \
-    -I$(THIRDPARTY)/comm/comm_2.6.2/include \
+    -I$(THIRDPARTY)/comm/comm_2.7.1/include \
     -I$(THIRDPARTY)/libconfig/include \
         -I$(THIRDPARTY)/ulog-old/include \
     -I$(THIRDPARTY)/eigen/include/eigen3 \
@@ -81,7 +92,7 @@ INCLUDES := \
 
 # 库文件搜索路径
 LDFLAGS := \
-    -L$(THIRDPARTY)/comm/comm_2.6.2/lib \
+    -L$(THIRDPARTY)/comm/comm_2.7.1/lib \
     -L$(THIRDPARTY)/libconfig/lib \
      -L$(THIRDPARTY)/ulog-old/lib \
     -L$(THIRDPARTY)/opencv-hw/opencv/lib \

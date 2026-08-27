@@ -10,7 +10,6 @@
 
 ConfigReadError readConfigFile(STR_LIDAR_CONFIG *strLidarConfig, const char* strConfigPath)
 {
-	//loadConfigFile();
     config_t strCfg;
     config_setting_t *pSetting;
     config_init(&strCfg);

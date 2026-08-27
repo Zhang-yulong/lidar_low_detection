@@ -218,6 +218,22 @@ struct SELF_DEBUG_CONFIG{
     DEBUG_VIEWER_CONFIG Cluster;             // 聚类 Label 图
     DEBUG_VIEWER_CONFIG BoundingBox;         // 包围盒俯视图
     DEBUG_VIEWER_CONFIG Overlay;             // 最终点云叠加图
+    DEBUG_VIEWER_CONFIG TrackerOverlay;      // 第九层: 跟踪结果点云叠加图
+
+    // ======== hdmap过滤 ========
+    int mapFilterModel;
+    std::string mapPath;
+
+    // ======== Localization + HDMap 扩展配置（新增，见迁移设计文档）========
+    int localizationEnable;        // Localization.enable    : 0=不订阅定位 1=订阅
+    int localizationTimeoutMs;     // Localization.timeout_ms: 定位新鲜度阈值(ms)
+    int localizationDebugEnable;   // Localization.debugEnable: 0=off 1=离线调试固定位姿
+    double localizationDebugX;     // Localization.debugX     : 调试位姿 X（地图坐标 m）
+    double localizationDebugY;     // Localization.debugY     : 调试位姿 Y（地图坐标 m）
+    double localizationDebugHeading; // Localization.debugHeading: 调试航向（度）
+    int hdmapFilterMode;           // HdmapFilter.filterMode  : 0=仅标记(默认) 1=软约束
+    float hdmapExpandDistance;     // HdmapFilter.expandDistance: 道路边界外扩距离(m)
+    int hdmapLogEveryN;            // HdmapFilter.logEveryN   : 每 N 帧打印 cluster 级日志
 };
 
 class YamlReader {

@@ -1044,11 +1044,12 @@ bool ElevationMapGroundFilter::ProcessWithObstacleDetection(
         m_debugViewer->DrawBoundingBox(clusters, m_elevationGridConfig);
     }
 
-    // ── Debug: 最终点云叠加图 ──
-    if (m_debugViewer)
-    {
-        m_debugViewer->DrawOverlay(*ground_cloud, *obstacle_cloud, clusters, m_elevationGridConfig);
-    }
+    // // ── Debug: 最终点云叠加图 ──
+    // if (m_debugViewer)
+    // {
+    //      8-27日换了
+    //     m_debugViewer->DrawOverlay(*ground_cloud, *obstacle_cloud, clusters, m_elevationGridConfig);
+    // }
 
     return true;
 }

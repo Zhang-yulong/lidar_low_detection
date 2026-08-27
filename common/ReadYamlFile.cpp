@@ -89,16 +89,19 @@ bool YamlReader::LoadConfig(SELF_DEBUG_CONFIG& config)
             throw std::runtime_error("Error: Lack <GroundLane>");
         }
 
+        cv::FileNode MapGroundFilterNode = fs["MapGroundFilter"];
+        if(MapGroundFilterNode.empty()){
+            throw std::runtime_error("Error: Lack <MapGroundFilter>");
+        }
+
+        // HdmapFilter 节为可选：缺失时按 mapFilterModel=0（不启用 HDMap 过滤）处理
+
         config.selfComputerIP   = ReadRequired<std::string>(LidarNode, "selfComputerIP");
         config.groupIP          = ReadRequired<std::string>(LidarNode, "groupIP");
         
         config.msopPort         = ValidatePort(ReadRequired<int>(LidarNode, "msopPort"));
         config.difopPort        = ValidatePort(ReadRequired<int>(LidarNode, "difopPort"));
-        // 读取lidar
-        // config.selfComputerIP       = (std::string)fs["Lidar"]["selfComputerIP"];
-        // config.msopPort             = (int)fs["Lidar"]["msopPort"];
-        // config.difopPort            = (int)fs["Lidar"]["difopPort"];
-
+  
         config.LSlidarType            = (std::string)fs["Lidar"]["LSlidarType"];
 
         std::string STlidarTypeStr   = (std::string)fs["Lidar"]["STlidarType"];
@@ -232,8 +235,8 @@ bool YamlReader::LoadConfig(SELF_DEBUG_CONFIG& config)
         config.near_range_boundary          = (float)fs["MapGroundFilter"]["near_range_boundary"];
 
         // ======== DebugViewer 调试可视化配置 ========
-        cv::FileNode debugNode = fs["DebugViewer"];
-        if (!debugNode.empty())
+        cv::FileNode DebugViewerNode = fs["DebugViewer"];
+        if (!DebugViewerNode.empty())
         {
             // 辅助 lambda: 从 FileNode 读取 DEBUG_VIEWER_CONFIG
             auto readDebugCfg = [](const cv::FileNode& parent, const std::string& key) -> DEBUG_VIEWER_CONFIG {
@@ -250,16 +253,67 @@ bool YamlReader::LoadConfig(SELF_DEBUG_CONFIG& config)
                 return cfg;
             };
 
-            config.debug_save_dir     = (std::string)debugNode["save_dir"];
+            config.debug_save_dir     = (std::string)DebugViewerNode["save_dir"];
 
-            config.HeightMap          = readDebugCfg(debugNode, "HeightMap");
-            config.GroundMask         = readDebugCfg(debugNode, "GroundMask");
-            config.Slope              = readDebugCfg(debugNode, "Slope");
-            config.GroundReference    = readDebugCfg(debugNode, "GroundReference");
-            config.ObstacleCandidate  = readDebugCfg(debugNode, "ObstacleCandidate");
-            config.Cluster            = readDebugCfg(debugNode, "Cluster");
-            config.BoundingBox        = readDebugCfg(debugNode, "BoundingBox");
-            config.Overlay            = readDebugCfg(debugNode, "Overlay");
+            config.HeightMap          = readDebugCfg(DebugViewerNode, "HeightMap");
+            config.GroundMask         = readDebugCfg(DebugViewerNode, "GroundMask");
+            config.Slope              = readDebugCfg(DebugViewerNode, "Slope");
+            config.GroundReference    = readDebugCfg(DebugViewerNode, "GroundReference");
+            config.ObstacleCandidate  = readDebugCfg(DebugViewerNode, "ObstacleCandidate");
+            config.Cluster            = readDebugCfg(DebugViewerNode, "Cluster");
+            config.BoundingBox        = readDebugCfg(DebugViewerNode, "BoundingBox");
+            config.Overlay            = readDebugCfg(DebugViewerNode, "Overlay");
+            config.TrackerOverlay     = readDebugCfg(DebugViewerNode, "TrackerOverlay");
+        }
+        else{
+            throw std::runtime_error("Error: Lack <DebugViewer>");
+        }
+
+
+        // ======== hdmap ========
+        cv::FileNode HdNode = fs["HdmapFilter"];
+        if (!HdNode.empty())
+        {
+            config.mapFilterModel       = (int)HdNode["mapFilterModel"];
+            config.mapPath              = (std::string)HdNode["mapPath"];
+            config.hdmapFilterMode      = HdNode["filterMode"].empty()     ? 0     : (int)HdNode["filterMode"];
+            config.hdmapExpandDistance  = HdNode["expandDistance"].empty() ? 0.5f  : (float)HdNode["expandDistance"];
+            config.hdmapLogEveryN       = HdNode["logEveryN"].empty()      ? 50    : (int)HdNode["logEveryN"];
+        }
+        else
+        {
+            config.mapFilterModel       = 0;
+            config.mapPath              = "";
+            config.hdmapFilterMode      = 0;
+            config.hdmapExpandDistance  = 0.5f;
+            config.hdmapLogEveryN       = 50;
+        }
+
+        // mapPath 为空 -> 使用默认地图地址（/etc/echiev/hdmap/hdmap.bin）
+        if (config.mapPath.empty())
+        {
+            config.mapPath = "/etc/echiev/hdmap/hdmap.bin";
+        }
+
+        // ======== Localization（新增，可选节）========
+        cv::FileNode LocNode = fs["Localization"];
+        if (!LocNode.empty())
+        {
+            config.localizationEnable     = (int)LocNode["enable"];
+            config.localizationTimeoutMs  = LocNode["timeout_ms"].empty() ? 1000 : (int)LocNode["timeout_ms"];
+            config.localizationDebugEnable = LocNode["debugEnable"].empty() ? 0 : (int)LocNode["debugEnable"];
+            config.localizationDebugX      = LocNode["debugX"].empty() ? 0.0 : (double)LocNode["debugX"];
+            config.localizationDebugY      = LocNode["debugY"].empty() ? 0.0 : (double)LocNode["debugY"];
+            config.localizationDebugHeading = LocNode["debugHeading"].empty() ? 0.0 : (double)LocNode["debugHeading"];
+        }
+        else
+        {
+            config.localizationEnable     = 0;
+            config.localizationTimeoutMs  = 1000;
+            config.localizationDebugEnable = 0;
+            config.localizationDebugX      = 0.0;
+            config.localizationDebugY      = 0.0;
+            config.localizationDebugHeading = 0.0;
         }
 
         fs.release(); // 释放文件

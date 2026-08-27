@@ -90,7 +90,7 @@ struct ElevationGridConfig
 
     // ---- 占据层数阈值 ----
     // 低矮障碍物在 Z 方向应至少占据若干层，防止单层噪点被误检
-    int min_occupied_layers_obstacle = 2;
+    int min_occupied_layers_obstacle = 1;
 
     // ---- 竖直结构判定阈值 ----
     // 竖直结构（如杆子、墙壁）特征：高度大但占据层稀疏（大部分中间层为空）
@@ -304,6 +304,16 @@ struct GridCluster
     float   obb_angle     = 0.0f;   // OBB 旋转角 (rad)，长轴与 X 轴正向的夹角 [-π/2, π/2]
     Point2D obb_corners[4];         // OBB 4 个角点 (逆时针: 左下→右下→右上→左上)
     bool    has_obb       = false;  // 是否已成功计算 OBB（cell 数量太少时可能退化）
+
+    // ========================================================================
+    // HDMap 软约束标签（由 HDMapFilter 填充，Cluster 级，见迁移设计文档）
+    // ========================================================================
+    // 设计原则（软约束，不是硬过滤）：
+    //   - 低矮障碍物可能正好位于正常道路上，因此"in_road=false"不删除 Cluster
+    //   - 仅作为"额外空间先验"，由 HDMapFilter 打标签，默认保留所有障碍物
+    bool    in_road        = false;  // 是否位于地图可行驶(道路)区域
+    bool    map_valid      = false;  // 本次过滤时 定位+地图 是否有效
+    float   map_confidence = 0.0f;   // 地图置信度: 1.0=道路内, 低值=道路外/未知
 };
 
 
@@ -400,7 +410,8 @@ public:
 
     // // ---- 配置接口 ----
     // void SetConfig(const ElevationGridConfig& config) { m_elevationGridConfig = config; }
-    // const ElevationGridConfig& GetConfig() const { return m_elevationGridConfig; }
+    /// @brief 获取当前网格配置（供外部可视化等复用同一坐标系）
+    const ElevationGridConfig& GetConfig() const { return m_elevationGridConfig; }
 
     // ---- DebugViewer 注入接口 ----
     /**

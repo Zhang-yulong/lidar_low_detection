@@ -148,8 +148,8 @@ static void UpdateGroundViewer(const PointCloud2Intensity::Ptr&       pGroundClo
         ground_viewer->setShapeRenderingProperties(
             pcl::visualization::PCL_VISUALIZER_REPRESENTATION,
             pcl::visualization::PCL_VISUALIZER_REPRESENTATION_WIREFRAME, box_id);
-        // ground_viewer->addSphere(pcl::PointXYZ(c.center_x, c.center_y, c.center_z),
-        //                          0.15, 1.0, 1.0, 0.0, center_id);
+        ground_viewer->addSphere(pcl::PointXYZ(c.center_x, c.center_y, c.center_z),
+                                 0.15, 1.0, 1.0, 0.0, center_id);
     }
     g_lastClusterCount = static_cast<int>(clusters.size());
 }
@@ -211,8 +211,8 @@ static void UpdateGroundViewer(const PointCloud2Intensity::Ptr&       pGroundClo
         ground_viewer->setShapeRenderingProperties(
             pcl::visualization::PCL_VISUALIZER_REPRESENTATION,
             pcl::visualization::PCL_VISUALIZER_REPRESENTATION_WIREFRAME, box_id);
-        // ground_viewer->addSphere(pcl::PointXYZ(t.pos_x, t.pos_y, t.pos_z),
-        //                          0.2, 1.0, 0.5, 0.0, center_id);
+        ground_viewer->addSphere(pcl::PointXYZ(t.pos_x, t.pos_y, t.pos_z),
+                                 0.2, 1.0, 0.5, 0.0, center_id);
     }
     g_lastTrackCount = static_cast<int>(tracks.size());
 }
