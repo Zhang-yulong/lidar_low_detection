@@ -9,6 +9,7 @@
 #include "LeiShenDriver.h"
 #include "SuTengDriver.h"
 #include "foxglove_publisher.h"
+#include "debug_frame_queue.h"
 #include "UdpCommunication.h"
 #include "ulog_api.h"
 #include "localization_manager.h"
@@ -563,11 +564,12 @@ int main(int argc, char *argv[])
         perror("pthread_create SignalThread failed");
         if (fgReady)
         {
-            fgPublisher.Stop();
+            StopDebugFrameQueue();
             if (fgThread.joinable())
             {
                 fgThread.join();
             }
+            fgPublisher.Stop();
         }
         stDriver.Stop();
         stDriver.Free();
@@ -645,15 +647,17 @@ int main(int argc, char *argv[])
 	// 4. 等待信号线程退出
 	pthread_join(sig_tid, nullptr);
 
-	// 停止 Foxglove Publisher（Phase 1：先置运行标志再 join；SDK 资源在 Stop() 内释放）
-	// ⚠️ Phase 2 接入 DebugFrameQueue 后，应改为：先请求线程退出 → join → 再 Stop() 释放 SDK
+	// 停止 Foxglove（Phase 2：先停止队列唤醒线程 → join → 再释放 SDK 资源）
+	// 顺序保证 PublisherThread 在 FoxglovePublisher::Stop() 释放 SDK 之前已退出，
+	// 线程不会访问已释放的 SDK 对象。
 	if (fgReady)
 	{
-		fgPublisher.Stop();
+		StopDebugFrameQueue();   // stopped=true + notify_all → 唤醒 cv.wait 中的线程
 		if (fgThread.joinable())
 		{
-			fgThread.join();
+			fgThread.join();     // 线程退出
 		}
+		fgPublisher.Stop();      // join 后再释放 SDK 资源
 	}
 
 	// lsDrive.Stop();

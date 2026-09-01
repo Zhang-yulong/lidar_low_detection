@@ -1,4 +1,6 @@
 #include "SuTengDriver.h"
+#include "debug_frame.h"
+#include "debug_frame_queue.h"
 #include <chrono>
 #include <pcl/common/transforms.h>
 #include <pcl/filters/statistical_outlier_removal.h>
@@ -1147,6 +1149,20 @@ void SutengDriver::ProcessPcapCloud(){
                 outputObject.return_val,
                 outputObject.obs_num,
                 sizeof(newS2AviodObject));
+        }
+
+        // ── DebugFrame：一帧算法结果快照（Phase 2，纯新增，UDP 之后 push）──
+        // 数据均为最终状态；不改变任何算法逻辑 / 执行时序 / UDP。
+        {
+            auto debugFrame = std::make_shared<DebugFrame>();
+            debugFrame->timestamp_ms = rec_timestamp_ms;
+            // 方案B：对复用的 pFilteredPointCloud 做一次独立深拷贝。
+            // 注意：PCL 1.8 下 PointCloud2Intensity::Ptr = boost::shared_ptr，
+            //       故用 Ptr(new ...) 构造（不能用 std::make_shared）。
+            debugFrame->pointcloud = PointCloud2Intensity::Ptr(new PointCloud2Intensity(*pFilteredPointCloud));
+            debugFrame->clusters   = outputClusters;        // 按值（含 HDMap 标签）
+            debugFrame->trackings  = m_tracker.vtrackings;  // 按值（update 后最终结果）
+            PushDebugFrame(std::move(debugFrame));
         }
 
         auto t_end = std::chrono::steady_clock::now();

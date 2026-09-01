@@ -11,12 +11,11 @@
  */
 
 #include "foxglove_publisher.h"
+#include "debug_frame_queue.h"
 
 #include <cstdio>
 #include <cstring>
 #include <cstddef>   // offsetof
-#include <chrono>
-#include <thread>
 
 namespace Lidar_Low_Detection
 {
@@ -288,8 +287,8 @@ void FoxglovePublisher::BuildFieldDescriptors()
 
 // =============================================================================
 // FoxglovePublisherThread — 消费者线程
-// Phase 1：无 DebugFrame 数据，线程仅轮询保活并等待退出。
-// Phase 2 接入 DebugFrameQueue 后改为：cv.wait → 读最新帧(back, 不 pop) → 发布。
+// Phase 2：cv.wait 阻塞等待 DebugFrameQueue → back() 获取最新帧（不 pop）→ 最小日志。
+//          本阶段不发布任何 Foxglove 数据；Phase 3/4/5 将在锁外发布。
 // =============================================================================
 
 void FoxglovePublisherThread(FoxglovePublisher* publisher)
@@ -302,11 +301,36 @@ void FoxglovePublisherThread(FoxglovePublisher* publisher)
 
     printf("[FoxglovePublisherThread] Started\n");
 
-    while (publisher->IsRunning())
+    while (true)
     {
-        // Phase 1：无队列数据，简单轮询保活。
-        // Phase 2：改为 g_debug_frame_cv.wait(...)，避免轮询。
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::shared_ptr<DebugFrame> frame;
+        {
+            // 锁只保护 Queue 数据访问；无新帧时阻塞等待（不再是 10ms 轮询）
+            std::unique_lock<std::mutex> lock(g_debug_frame_mutex);
+            g_debug_frame_cv.wait(lock, [] {
+                return g_debug_frame_stopped.load(std::memory_order_acquire) ||
+                       !g_debug_frame_queue.empty();
+            });
+
+            if (g_debug_frame_stopped.load(std::memory_order_acquire))
+            {
+                break;  // 程序退出
+            }
+
+            // back() = 当前最新 Frame；锁内复制 shared_ptr（refcount+1），不 pop。
+            // 解锁后 frame 持有独立、安全的 DebugFrame 副本，Producer pop_front 不影响它。
+            frame = g_debug_frame_queue.back();
+        }   // 解锁：Publish 必须在锁外执行（Phase 3 起）
+
+        // ── Phase 2：最小日志验证握手；本阶段不发布任何 Foxglove 数据 ──
+        if (frame)
+        {
+            printf("[Foxglove] DebugFrame consumed, timestamp=%llu, "
+                   "clusters=%zu, trackings=%zu\n",
+                   frame->timestamp_ms,
+                   frame->clusters.size(),
+                   frame->trackings.size());
+        }
     }
 
     printf("[FoxglovePublisherThread] Exited\n");
