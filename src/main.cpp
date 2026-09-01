@@ -4,9 +4,11 @@
 #include <signal.h>
 #include <atomic>
 #include <chrono>
+#include <thread>
 #include <pcl/visualization/pcl_visualizer.h>
 #include "LeiShenDriver.h"
 #include "SuTengDriver.h"
+#include "foxglove_publisher.h"
 #include "UdpCommunication.h"
 #include "ulog_api.h"
 #include "localization_manager.h"
@@ -513,6 +515,32 @@ int main(int argc, char *argv[])
 	stDriver.Init();
 	stDriver.Start();
 
+	// ============================================================
+	// Foxglove Publisher 基础设施（Phase 1：仅基础线程，不接算法数据）
+	//   生命周期：Init → StartServer → CreatePointCloudChannel → 线程 → Stop
+	//   本阶段 FoxglovePublisherThread 只保活等待退出，不读取任何算法数据
+	//   （pFilteredPointCloud / outputClusters / m_tracker.vtrackings 均未接入）。
+	//   注意：x86 开发机当前缺 libfoxglove.so，链接失败由用户提供库后解决，
+	//         此处不处理（见 docs/Foxglove_LowObstacle_Integration_Analysis.md §15.3）。
+	// ============================================================
+	FoxglovePublisher fgPublisher;
+	const bool fgReady =
+	    fgPublisher.Init("0.0.0.0", 8765, "low_detection") &&
+	    fgPublisher.StartServer() &&
+	    fgPublisher.CreatePointCloudChannel("/low_obstacle/pointcloud");
+
+	std::thread fgThread;
+	if (fgReady)
+	{
+		fgThread = std::thread(FoxglovePublisherThread, &fgPublisher);
+		LOG_RAW("[Foxglove] Publisher thread started (port=%u)\n",
+		        (unsigned)fgPublisher.GetPort());
+	}
+	else
+	{
+		LOG_RAW("[Foxglove] Publisher init failed, foxglove visualization disabled\n");
+	}
+
 	// pcap 回放模式下：独立线程从同一 pcap 解析 9110 定位报文喂给 LocalizationManager
 	// （rs_driver 回放不经过内核网络栈，9110 socket 收不到数据；在线模式 9110 由真实
 	//  组播送入 OpenfusionLocMCClient，无需本模块）
@@ -533,6 +561,14 @@ int main(int argc, char *argv[])
     pthread_t sig_tid;
     if (pthread_create(&sig_tid, nullptr, SignalThread, &TerminateFlag) != 0) {
         perror("pthread_create SignalThread failed");
+        if (fgReady)
+        {
+            fgPublisher.Stop();
+            if (fgThread.joinable())
+            {
+                fgThread.join();
+            }
+        }
         stDriver.Stop();
         stDriver.Free();
         return -1;
@@ -608,6 +644,17 @@ int main(int argc, char *argv[])
 
 	// 4. 等待信号线程退出
 	pthread_join(sig_tid, nullptr);
+
+	// 停止 Foxglove Publisher（Phase 1：先置运行标志再 join；SDK 资源在 Stop() 内释放）
+	// ⚠️ Phase 2 接入 DebugFrameQueue 后，应改为：先请求线程退出 → join → 再 Stop() 释放 SDK
+	if (fgReady)
+	{
+		fgPublisher.Stop();
+		if (fgThread.joinable())
+		{
+			fgThread.join();
+		}
+	}
 
 	// lsDrive.Stop();
     // lsDrive.Free();

@@ -13,20 +13,38 @@ Lidar:
   scanRings: 128
   pathTolidarTransformConfig: 11 #0: 电脑E1小车 1: E1现场车 2:佛山T1 3:佛山现场T1 4:t05_right_shenzhen 5:t05_left_shenzhen 6:t05_right_hainan 7:t05_left_hainan #8:海南现场T05 9:海南现场E1 10:E1_right_hainan
   
+  
 Model:
   onlineModel: 0
   pcapRunningModel: 1
-  rs_pcapPath: "/home/zyl/pcap/T05/test_emx.pcap" #left
+  rs_pcapPath: "/home/zyl/pcap/T05/纸巾瓶子.pcap" #test_emx.pcap
   pcdRunningModel: 0
   pcdPathTime: "1741331381727"
   pcdPath: "/home/zyl/echiev_low_lidar_detection/log/init.pcd" #right_airy_firebottle  right_bottle log/init.pcd init-4m.pcd iii_开始位置不能识别到
   savePcdReflection: 30
-  curbDetection: 1 # 边缘检测
-  commonGroundDetection: 1 # 地上车道线检测	
+  curbDetection: 0 # 边缘检测
+  commonGroundDetection: 0 # 地上车道线检测	
   
   openGroundViewer: 0 # 打开分割地面点的点云视图
   openClusterViewer: 0 # 打开聚类的点云视图
   
+  useFoxgloveModule: 0
+# ========== Localization + HDMap（新增，见迁移设计文档）==========
+Localization:
+  enable: 1        # 0=不订阅定位 1=订阅（需同时 mapFilterModel=1 且非pcd模式）
+  timeout_ms: 1000 # 定位新鲜度阈值(ms)，超过判为无效，HDMap 过滤自动关闭
+  debugEnable: 0   # 0=off 1=使用固定调试位姿（仅离线pcap回放验证用，勿在实车开启）
+  debugX: 0.0      # 调试位姿 X（地图坐标 m）
+  debugY: 0.0      # 调试位姿 Y（地图坐标 m）
+  debugHeading: 0.0 # 调试航向（度，北=0 顺时针）
+
+HdmapFilter:
+  mapFilterModel: 1
+  mapPath: "/home/zyl/echiev_low_lidar_detection/config/hdmap_shenzhen.bin"
+  filterMode: 1        # 0=仅标记(默认，不删除Cluster) 1=软约束(降低置信度)
+  expandDistance: 0.5  # 道路边界外扩距离(m)，防误删
+  logEveryN: 1        # 每 N 帧打印一次 cluster 级地图过滤日志
+ 
   
 Viewer:
   projectionModel: 1
@@ -96,7 +114,7 @@ MapGroundFilter:
   obstacle_top_height_min_near: 0.10  # 近距离最小 top_height (m)
   obstacle_top_height_max_near : 0.30   # 近距离最大 top_height (m)
   obstacle_top_height_min_far : 0.05   # 中距离最小 top_height (m)
-  obstacle_top_height_max_far  : 0.40   # 中距离最大 top_height (m)
+  obstacle_top_height_max_far  : 0.30   # 中距离最大 top_height (m)
   near_range_boundary          : 3.0    # 近/中距离分界 (m)
 
 GroundSegmentationFromSAC:
@@ -150,9 +168,9 @@ DebugViewer:
     save: 0
 
   GroundMask:
-    enable: 1
+    enable: 0
     show: 0
-    save: 1
+    save: 0
 
   Slope:
     enable: 0
@@ -179,7 +197,13 @@ DebugViewer:
     show: 0
     save: 0
 
+ #cluster
   Overlay:
-    enable: 0
-    show: 0
+    enable: 1
+    show: 1
     save: 0
+
+  TrackerOverlay:
+    enable: 1
+    show: 1
+    save: 1

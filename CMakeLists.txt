@@ -50,6 +50,7 @@ INCLUDE_DIRECTORIES(
     ./ls_driver/Include
     ./driver
     ./mapfilter
+    ./foxglove        # Foxglove SDK 头文件（foxglove-c.h）与 Publisher 源码
     ${EIGEN3_INCLUDE_DIR}
 )
 
@@ -66,6 +67,7 @@ LINK_LIBRARIES("${3rdparty}/opencv/opencv_3.3/lib/libopencv_core.so" )
 AUX_SOURCE_DIRECTORY(./ls_driver/Include LS)
 AUX_SOURCE_DIRECTORY(./common COMMON)    
 AUX_SOURCE_DIRECTORY(./include SRC)
+AUX_SOURCE_DIRECTORY(./foxglove FOXGLOVE)
 
 # HDMap + 定位相关源码（显式列出，不包含 get_roi/hdmap_roi_filter/coordinate_convert_tool，
 # 它们依赖项目 A 的 comment.h/PCL/PROJ，第一阶段暂不需要）
@@ -82,7 +84,7 @@ SET(MAPFILTER_SRC
 # SET(COMM ${3rdparty}/comm/comm_2.6.2/lib/libcomm.so)
 SET(COMM ${3rdparty}/comm/comm_2.7.1/lib/libcomm.so)
 
-add_executable(low_detection src/main.cpp ${LS} ${SRC} ${COMMON} ${MAPFILTER_SRC})
+add_executable(low_detection src/main.cpp ${LS} ${SRC} ${COMMON} ${MAPFILTER_SRC} ${FOXGLOVE})
 
 #方法二
 
@@ -109,6 +111,20 @@ target_compile_definitions(low_detection PRIVATE
 #     target_compile_definitions(low_detection PRIVATE NO_USE_PCAP)
 # endif()
 
+# ============================================================
+# Foxglove SDK（Phase 1 基础接入）
+#   头文件：./foxglove/foxglove-c.h（与相机项目逐字节一致，已就位）
+#   库：需要链接 libfoxglove（.so/.a）
+#     - x86 开发（本 CMake 构建）：当前缺 x86 版库，由用户提供后
+#       将 libfoxglove.so 放到 ./foxglove/lib/ 即可
+#     - ARM 交叉（根 Makefile）：复用相机项目 lib/libfoxglove.so (aarch64)
+#   注意：缺少 x86 库时，链接阶段会报“cannot find -lfoxglove”，
+#         属预期阻塞点，不在此处处理。
+# ============================================================
+# Foxglove SDK 库搜索路径（x86 库放置目录，用户提供后生效）
+# LINK_DIRECTORIES("${CMAKE_CURRENT_SOURCE_DIR}/foxglove/lib")
+
+
 target_link_libraries(low_detection 
     
     pthread 
@@ -121,6 +137,8 @@ target_link_libraries(low_detection
     ${PCL_LIBRARIES} 
     
     ${EIGEN3_LIBS}
+    foxglove
+)
     # # PCL库 - 使用绝对路径
     # "${3rdparty}/pcl/pcl-1.8.0/release/lib/libpcl_2d.so"
     # "${3rdparty}/pcl/pcl-1.8.0/release/lib/libpcl_common.so"
@@ -170,7 +188,6 @@ target_link_libraries(low_detection
     # "${3rdparty}/vtk/vtk-6.3.0/release/lib/libvtkRenderingOpenGL-6.3.so"
     # "${3rdparty}/vtk/vtk-6.3.0/release/lib/libvtkRenderingLOD-6.3.so"
     # "${3rdparty}/vtk/vtk-6.3.0/release/lib/libvtkFiltersSources-6.3.so"
-)
 
 # # 方法一 配套
 # if(NOT NO_USE_PCAP)

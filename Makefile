@@ -28,7 +28,7 @@ OBJDIR = $(ROOT)
 # 根据 CMakeLists.txt 中的 AUX_SOURCE_DIRECTORY 定义
 # 仅纳入当前低矮检测项目真实需要的 mapfilter 子集，避免把项目 A 专用的
 # get_roi / hdmap_roi_filter 等 legacy 文件一并编译进来。
-SRC_DIRS := src ls_driver/Include common include
+SRC_DIRS := src ls_driver/Include common include foxglove
 MAPFILTER_SRC := \
     mapfilter/read_hdmap.cpp \
     mapfilter/convert.cpp \
@@ -72,6 +72,7 @@ INCLUDES := \
     -I$(ROOT)/mapfilter \
     -I$(ROOT)/ls_driver/Include \
     -I$(ROOT)/driver \
+    -I$(ROOT)/foxglove \
     -I$(THIRDPARTY)/comm/comm_2.7.1/include \
     -I$(THIRDPARTY)/libconfig/include \
         -I$(THIRDPARTY)/ulog-old/include \
@@ -82,7 +83,8 @@ INCLUDES := \
     -I$(THIRDPARTY)/pcl/include/pcl-1.8 \
     -I$(THIRDPARTY)/vtk/include/vtk-6.3 \
     -I$(THIRDPARTY)/boost/include \
-    -I$(THIRDPARTY)/flann/include
+    -I$(THIRDPARTY)/flann/include \
+    -I$(THIRDPARTY)/proj4/include
 
 
 #----------------------------------------------------------------------------------
@@ -100,6 +102,7 @@ LDFLAGS := \
     -L$(THIRDPARTY)/vtk/lib \
     -L$(THIRDPARTY)/boost/lib \
     -L$(THIRDPARTY)/flann/lib \
+    -L$(THIRDPARTY)/proj4/lib \
     -L$(ROOTFS_DIR)/usr/lib \
     -L$(ROOTFS_DIR)/usr/lib/aarch64-linux-gnu \
     -L$(ROOTFS_DIR)/lib
@@ -116,7 +119,19 @@ ifndef NO_USE_PCAP
 LIBS += -lpcap
 endif
 
+# ---------------------------------------------------------------------------
+# Foxglove SDK（Phase 1 基础接入）
+#   头文件：$(ROOT)/foxglove/foxglove-c.h（已就位）
+#   库：需要链接 libfoxglove（.so/.a）
+#     - ARM 交叉（本 Makefile）：复用相机项目
+#       /home/zyl/echiev_eclipse_workspace/mrdvs_camera_newsdk_26year_callback_v2.1/lib/
+#       下的 libfoxglove.so (aarch64)，把该目录加入 LDFLAGS 的 -L 即可
+#     - 若需在本机 x86 验证，请提供 x86 版 libfoxglove（见 docs 分析文档 §15.3）
+#   注意：缺库时链接阶段会报“cannot find -lfoxglove”，属预期阻塞点，不在此处处理。
+# ---------------------------------------------------------------------------
+
 LIBS := \
+    -lfoxglove \
     -lcomm \
     -lconfig \
     -lconfig++ \
@@ -159,6 +174,7 @@ LIBS := \
     -lvtktiff-6.3                 -lvtkverdict-6.3           -lvtkViewsContext2D-6.3    -lvtkViewsCore-6.3                -lvtkViewsInfovis-6.3       -lvtkzlib-6.3 \
     -lpthread \
     -lflann_cpp -lflann \
+    -lproj\
     -lrt \
     -lz\
     -ldl \

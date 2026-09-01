@@ -163,6 +163,8 @@ struct SELF_DEBUG_CONFIG{
     int openGroundViewer;
     int openClusterViewer;
 
+    int useFoxgloveModule;
+
     // Viewer
     int projectionModel;
     int savePictureModel;

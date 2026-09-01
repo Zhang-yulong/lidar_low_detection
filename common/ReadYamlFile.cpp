@@ -188,8 +188,11 @@ bool YamlReader::LoadConfig(SELF_DEBUG_CONFIG& config)
         config.curbDetection        = (int)fs["Model"]["curbDetection"];
         config.groundLoadDetection  = (int)fs["Model"]["groundLoadDetection"];
 
-        config.openGroundViewer      = (int)fs["Model"]["openGroundViewer"];
+        config.openGroundViewer     = (int)fs["Model"]["openGroundViewer"];
         config.openClusterViewer    = (int)fs["Model"]["openClusterViewer"];
+
+        config.useFoxgloveModule    = (int)fs["Model"]["useFoxgloveModule"];
+
 
         // 读取Viewer
         config.projectionModel  = (int)fs["Viewer"]["projectionModel"];
