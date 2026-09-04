@@ -173,6 +173,45 @@ public:
 
 private:
     void removeLostTargets();
+
+    // ========================================================================
+    // CorrectObjectLoc（最小版、保守、可回退）
+    //
+    // 在 Association 完成之后、使用 Detection 更新 Track 之前调用。
+    //
+    // 目的：
+    //   降低 10cm Grid 栅格化造成的 Detection 中心在相邻帧间的 ±10~20cm 抖动。
+    //
+    // 做法：
+    //   对 Detection 中心做 25 点二维离散平移搜索（X/Y 各
+    //   {-0.20, -0.10, 0.0, +0.10, +0.20}），用 Track 上一帧 footprint
+    //   （corners[4]）与平移后 Detection footprint 的对称平均最近角点距离
+    //   作为 score，选择 score 最小的候选。
+    //
+    // 约束：
+    //   - 不参与 Association，不改变 Track ID；
+    //   - 不依赖 OBB angle，不重新计算 OBB；
+    //   - 无可信候选时回退 raw center（返回 false，调用方保持原值）。
+    //
+    // @param track       已匹配的 Track（提供上一帧 footprint 历史）
+    // @param detection   当前已匹配的 Detection（提供本帧 footprint）
+    // @param corrected_x 输出: 修正后的中心 X（返回 false 时 = raw X）
+    // @param corrected_y 输出: 修正后的中心 Y（返回 false 时 = raw Y）
+    // @param best_dx     输出: 最优候选的 X 平移量
+    // @param best_dy     输出: 最优候选的 Y 平移量
+    // @param score_before 输出: raw center 的 score
+    // @param score_after  输出: 最优候选的 score
+    // @return true 表示找到可信候选并修正；false 表示保持 raw center
+    bool correctObjectLoc(
+        const TrackedObstacle& track,
+        const TrackedObstacle& detection,
+        float& corrected_x,
+        float& corrected_y,
+        float& best_dx,
+        float& best_dy,
+        float& score_before,
+        float& score_after
+    ) const;
 };
 
 

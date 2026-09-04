@@ -94,6 +94,143 @@ void KalmanFilter2D::update(float meas_x, float meas_y) {
 
 
 
+// ============================================================================
+// CorrectObjectLoc 辅助：对称平均最近角点距离
+//
+// 物理意义：
+//   把 detection 的 4 个角点整体平移 (dx, dy)，与 track 的 4 个角点做
+//   双向最近点匹配，取平均距离。值越小，两个 footprint 边界越重合。
+//
+// 不依赖 OBB angle：直接用角点坐标，不比较角度。
+// ============================================================================
+static float ComputeFootprintScore(
+    const TrackedObstacle& track,
+    const TrackedObstacle& detection,
+    float dx,
+    float dy)
+{
+    Point2D shifted[4];
+    for (int i = 0; i < 4; ++i) {
+        shifted[i].x = detection.corners[i].x + dx;
+        shifted[i].y = detection.corners[i].y + dy;
+    }
+
+    // det -> track
+    float sum_dt = 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        float best = 1e9f;
+        for (int j = 0; j < 4; ++j) {
+            float ddx = shifted[i].x - track.corners[j].x;
+            float ddy = shifted[i].y - track.corners[j].y;
+            float d = std::sqrt(ddx * ddx + ddy * ddy);
+            if (d < best) best = d;
+        }
+        sum_dt += best;
+    }
+
+    // track -> det
+    float sum_td = 0.0f;
+    for (int j = 0; j < 4; ++j) {
+        float best = 1e9f;
+        for (int i = 0; i < 4; ++i) {
+            float ddx = track.corners[j].x - shifted[i].x;
+            float ddy = track.corners[j].y - shifted[i].y;
+            float d = std::sqrt(ddx * ddx + ddy * ddy);
+            if (d < best) best = d;
+        }
+        sum_td += best;
+    }
+
+    return 0.5f * (sum_dt + sum_td) / 4.0f;
+}
+
+
+bool SimpleTracker::correctObjectLoc(
+    const TrackedObstacle& track,
+    const TrackedObstacle& detection,
+    float& corrected_x,
+    float& corrected_y,
+    float& best_dx,
+    float& best_dy,
+    float& score_before,
+    float& score_after) const
+{
+    // 默认：回退 raw center
+    corrected_x = detection.pos_x;
+    corrected_y = detection.pos_y;
+    best_dx = 0.0f;
+    best_dy = 0.0f;
+    score_before = 0.0f;
+    score_after = 0.0f;
+
+    // ---- 几何信息有效性检查 ----
+    // 两个 footprint 都必须是"有形状"的（4 个角点不能退化成一个点）。
+    auto maxSpan = [](const Point2D (&c)[4]) {
+        float span = 0.0f;
+        for (int i = 0; i < 4; ++i) {
+            for (int j = i + 1; j < 4; ++j) {
+                float ddx = c[i].x - c[j].x;
+                float ddy = c[i].y - c[j].y;
+                span = std::max(span, std::sqrt(ddx * ddx + ddy * ddy));
+            }
+        }
+        return span;
+    };
+
+    const float kMinFootprintSpan = 0.05f;  // 5cm, 小于此视为无有效形状
+    if (maxSpan(detection.corners) < kMinFootprintSpan ||
+        maxSpan(track.corners)     < kMinFootprintSpan) {
+        return false;
+    }
+
+    // ---- 25 点离散搜索 ----
+    // static const float kOffsets[5] = {-0.20f, -0.10f, 0.0f, 0.10f, 0.20f};
+    // static const float kOffsets[3] = {-0.10f, 0.0f, 0.10f};
+    static const float kOffsets[3] = {-0.05f, 0.0f, 0.05f};
+
+    score_before = ComputeFootprintScore(track, detection, 0.0f, 0.0f);
+
+    float best_score = 1e9f;
+    float best_score_dx = 0.0f;
+    float best_score_dy = 0.0f;
+
+    for (int ix = 0; ix < 5; ++ix) {
+        for (int iy = 0; iy < 5; ++iy) {
+            float dx = kOffsets[ix];
+            float dy = kOffsets[iy];
+            float s = ComputeFootprintScore(track, detection, dx, dy);
+            if (s < best_score) {
+                best_score = s;
+                best_score_dx = dx;
+                best_score_dy = dy;
+            }
+        }
+    }
+
+    score_after = best_score;
+
+    // ---- 接受条件（保守）----
+    // 1) 必须有明显改善：最优候选显著优于 raw center（改善 > 5mm）。
+    // 2) 最优 score 必须足够小：两帧 footprint 确实重合（否则形状差异过大，
+    //    历史不可信，例如 OBB 方向跳变 / Cluster 合并分裂）。
+    const float kMinImprovement = 0.005f;  // 5mm
+    const float kMaxAcceptScore = 0.50f;   // 50cm
+
+    if (best_score >= score_before - kMinImprovement) {
+        return false;  // 没有明显优于 raw center
+    }
+    if (best_score > kMaxAcceptScore) {
+        return false;  // footprint 对不上，历史不可信
+    }
+
+    corrected_x = detection.pos_x + best_score_dx;
+    corrected_y = detection.pos_y + best_score_dy;
+    best_dx = best_score_dx;
+    best_dy = best_score_dy;
+    return true;
+}
+
+
 void SimpleTracker::hungarianAssignment(
     const std::vector<std::vector<float>>& cost_matrix,
     std::vector<int>& track_to_detection)
@@ -377,14 +514,40 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
             float old_x = vtrackings[i].pos_x;
             float old_y = vtrackings[i].pos_y;
 
-            // 2. 更新位置 (直接使用检测值)
-            vtrackings[i].pos_x = detections[best_det_idx].pos_x;
-            vtrackings[i].pos_y = detections[best_det_idx].pos_y;
+            // 2. 当前 Detection 原始中心（raw_center）
+            float raw_x = detections[best_det_idx].pos_x;
+            float raw_y = detections[best_det_idx].pos_y;
+
+            // 3. CorrectObjectLoc（Association 之后、Track 更新之前）
+            //    默认使用 raw center，只有找到可信候选才修正。
+            //    保守门限：新 Track（age < 1，即第一次被匹配）没有稳定历史，
+            //    直接使用 raw center，不执行修正。
+            float corrected_x = raw_x;
+            float corrected_y = raw_y;
+            float best_dx = 0.0f;
+            float best_dy = 0.0f;
+            float score_before = 0.0f;
+            float score_after = 0.0f;
+
+            if (delta_time > 0.0f && vtrackings[i].age >= 1) {
+                correctObjectLoc(
+                    vtrackings[i],
+                    detections[best_det_idx],
+                    corrected_x,
+                    corrected_y,
+                    best_dx,
+                    best_dy,
+                    score_before,
+                    score_after);
+            }
+
+            // 4. 用 corrected position 更新位置
+            vtrackings[i].pos_x = corrected_x;
+            vtrackings[i].pos_y = corrected_y;
             
-            // 3. 更新速度：使用 (当前检测位置 - 上一帧位置) / dt
-            // 这正是您提出的、最直观的方法！
-            vtrackings[i].vx = (vtrackings[i].pos_x - old_x) / delta_time;
-            vtrackings[i].vy = (vtrackings[i].pos_y - old_y) / delta_time;
+            // 5. 更新速度：基于 corrected position（与最终位置保持一致）
+            vtrackings[i].vx = (corrected_x - old_x) / delta_time;
+            vtrackings[i].vy = (corrected_y - old_y) / delta_time;
 
 
 
@@ -403,8 +566,11 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 				vtrackings[i].Rotation[r] = detections[best_det_idx].Rotation[r];
 			}
 			// 同步更新4个角点，否则corners保留旧帧数据，与新的center/depth/width不匹配
+			// CorrectObjectLoc 修正了中心后，footprint 整体平移 (best_dx, best_dy)，
+			// 保持 corners 与 corrected center 一致（未修正时 best_dx/best_dy = 0）。
 			for (int c = 0; c < 4; c++) {
-				vtrackings[i].corners[c] = detections[best_det_idx].corners[c];
+				vtrackings[i].corners[c].x = detections[best_det_idx].corners[c].x + best_dx;
+				vtrackings[i].corners[c].y = detections[best_det_idx].corners[c].y + best_dy;
 			}
 			
 			vtrackings[i].age++;
@@ -414,6 +580,12 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 
 			
 			LOG_RAW(" [与%d匹配上] 当前跟踪id = %d，distance = %.3f\n", detections[best_det_idx].cluster_id, vtrackings[i].id, cost_matrix[i][best_det_idx]);
+			LOG_RAW(" [CorrectObjectLoc] Track id=%d, raw_center=(%.3f, %.3f), corrected_center=(%.3f, %.3f), correction=(%.3f, %.3f), score_before=%.3f, score_after=%.3f\n",
+				vtrackings[i].id,
+				raw_x, raw_y,
+				corrected_x, corrected_y,
+				corrected_x - raw_x, corrected_y - raw_y,
+				score_before, score_after);
 			// LOG_RAW(" [与%d匹配] Track id = %d，distance = %.3f，Center(%.2f, %.2f, %.2f)，age=%d\n", 
 			// 	detections[best_det_idx].cluster_id, vtrackings[i].id, cost_matrix[i][best_det_idx],
 			// 	vtrackings[i].pos_x, vtrackings[i].pos_y, vtrackings[i].pos_z, vtrackings[i].age
