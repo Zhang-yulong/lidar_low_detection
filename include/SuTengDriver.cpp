@@ -1067,8 +1067,22 @@ void SutengDriver::ProcessPcapCloud(){
                 //           << track.pos_z << "), "
                 //           << "age=" << track.age
                 //           << std::endl;
+
+
+                VehiclePose vpose;
+                vpose.x          = loc_pose.x;
+                vpose.y          = loc_pose.y;
+                vpose.heading_deg = loc_pose.heading_deg;
+                const double veh_x = track.pos_x;
+                const double veh_y = track.pos_y;
+                double map_x = 0.0, map_y = 0.0;
+                CoordinateTransformer::vehicleToMap(veh_x, veh_y, vpose, map_x, map_y);
+
                 
-                LOG_RAW("Track id: %d: Center(%.2f, %.2f, %.2f), age=%d\n", track.id, track.pos_x, track.pos_y, track.pos_z, track.age);
+                // LOG_RAW("Track id: %d: Center(%.2f, %.2f, %.2f), age=%d\n", track.id, track.pos_x, track.pos_y, track.pos_z, track.age);
+                LOG_RAW("Track id: %d: Center(%.2f, %.2f, %.2f)->map= [%.3f, %.3f], loc(x=%.3f, y=%.3f, heading_deg=%.3f), age=%d\n", track.id, track.pos_x, track.pos_y, track.pos_z,
+                    vpose.x ,vpose.y, vpose.heading_deg, map_x, map_y, track.age);
+
             }
         }
 

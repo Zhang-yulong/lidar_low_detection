@@ -1331,8 +1331,8 @@ void DebugViewer::DrawClusterOverlay(const pcl::PointCloud<pcl::PointXYZI>& grou
         // 地图白线叠加（只绘制，不改变算法状态）
         DrawHdMapOverlay(image, mapPolygons, pose, gridCfg);
 
-        // // // 【临时调试】HDMap 叠加校准（1m 参考框 + 最近边界点，排查完成后删除）
-        // DrawHdMapOverlayCalib(image, mapPolygons, pose, gridCfg);
+        // // 【临时调试】HDMap 叠加校准（1m 参考框 + 最近边界点，排查完成后删除）
+        DrawHdMapOverlayCalib(image, mapPolygons, pose, gridCfg);
 
     }
 

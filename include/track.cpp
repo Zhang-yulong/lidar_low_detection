@@ -186,8 +186,8 @@ bool SimpleTracker::correctObjectLoc(
     // ---- 25 点离散搜索 ----
     // static const float kOffsets[5] = {-0.20f, -0.10f, 0.0f, 0.10f, 0.20f};
     // static const float kOffsets[3] = {-0.10f, 0.0f, 0.10f};
-    static const float kOffsets[3] = {-0.05f, 0.0f, 0.05f};
-
+    static const float kOffsets[5] = {-0.10f, -0.05f, 0.0f, 0.05f, 0.10f};
+    // static const float kOffsets[3] = {-0.05f, 0.0f, 0.05f};
     score_before = ComputeFootprintScore(track, detection, 0.0f, 0.0f);
 
     float best_score = 1e9f;
