@@ -413,6 +413,10 @@ public:
     /// @brief 获取当前网格配置（供外部可视化等复用同一坐标系）
     const ElevationGridConfig& GetConfig() const { return m_elevationGridConfig; }
 
+    /// @brief 获取 BuildGrid 计算出的有效 ROI X 起点（= max(roi_x_min, car_half_x+body_filter_x_threshold)）
+    ///        供外部（如 Historical Feedback 实验）与 Grid 使用同一坐标系
+    float GetEffectiveRoiXMin() const { return m_effective_roi_x_min; }
+
     // ---- DebugViewer 注入接口 ----
     /**
      * @brief 注入调试可视化模块（可选）

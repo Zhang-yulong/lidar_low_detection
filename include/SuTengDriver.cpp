@@ -3,6 +3,8 @@
 #include <pcl/common/transforms.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl/filters/conditional_removal.h>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <atomic>
 namespace Lidar_Low_Detection
@@ -10,7 +12,7 @@ namespace Lidar_Low_Detection
 
 std::atomic<unsigned long long> g_previousTimestamp(0);
 
-bool test_EMX = true; 
+bool test_EMX = true; //true false
 
 SutengDriver::SutengDriver(){
     m_pElevationMapGroundFilter = nullptr;
@@ -1011,23 +1013,22 @@ void SutengDriver::ProcessPcapCloud(){
         auto duration_4 = std::chrono::duration_cast<std::chrono::milliseconds>(t_end_4_ - t_end_3_);
 
 
+        // ── 定位读取：每帧统一读取一次（独立于 HDMap 开关，Historical Feedback 也需要）──
+        // getPose() 返回 has_data（是否收到过定位），loc_pose.valid 才是本帧新鲜有效标志。
+        {
+            const bool got_pose = LocalizationManager::instance().getPose(loc_pose);
+            have_pose = got_pose && loc_pose.valid;
+        }
+
         // ── HDMap 过滤：Cluster 级软约束（Cluster 生成后、Tracker 之前）──
         // 迁移设计文档 Phase 1：只打标签（in_road/map_valid/map_confidence），不删除 Cluster。
         // 定位无效 / 地图未加载 / 查询失败 → HDMapFilter 内部自动降级为"保留全部"。
         if (m_hdmapEnabled)
         {
-            // LocalizationManager::Pose loc_pose;
-            // LocalizationManager::instance().getPose(loc_pose);
-
-            have_pose = LocalizationManager::instance().getPose(loc_pose);
-
-            if (have_pose && loc_pose.valid)
+            if (have_pose)
             {
                 m_hdmapManager.buildDrivablePolygons(loc_pose.x, loc_pose.y, hdmap_polygons);
             }
-
-            m_debugViewer->DrawClusterOverlay(*pGroundCloud, *pObstacleCloud,outputClusters,m_pElevationMapGroundFilter->GetConfig(),hdmap_polygons,loc_pose);
-
 
             // 每帧定位诊断：点云帧墙钟时间戳 vs 定位新鲜度（墙钟）与定位模块时间戳
             // loc_age_ms = 当前墙钟 - 最近一次收到定位的墙钟；定位100Hz时一般 ≤10ms。
@@ -1042,14 +1043,10 @@ void SutengDriver::ProcessPcapCloud(){
 
             m_hdmapFilter.filterClusters(outputClusters, loc_pose, m_hdmapManager, rec_timestamp_ms);
         }
-        else{
-            m_debugViewer->DrawClusterOverlay(*pGroundCloud, *pObstacleCloud,outputClusters,m_pElevationMapGroundFilter->GetConfig(),hdmap_polygons,loc_pose);
-        }
 
+        m_debugViewer->DrawClusterOverlay(*pGroundCloud, *pObstacleCloud,outputClusters,m_pElevationMapGroundFilter->GetConfig(),hdmap_polygons,loc_pose);
 
-
-
-
+    
 
         // ── 跟踪器：为障碍物分配稳定的跨帧 ID（从 9999 起始）──
         {
@@ -1072,6 +1069,24 @@ void SutengDriver::ProcessPcapCloud(){
             }
         }
 
+        // ── Historical Feedback（Phase 2/3 Quick Validation，实验性）────────────────
+        // 只产生 Debug 证据（投影到当前 Grid 的空间先验 + Fused 统计），
+        // 不修改 detections / tracker 输入 / 最终 UDP 输出。
+        {
+            m_historicalFeedback.clear();
+            ComputeHistoricalFeedback(outputClusters, loc_pose, have_pose, m_historicalFeedback);
+
+            if (m_debugViewer)
+            {
+                m_debugViewer->DrawHistoricalFeedbackOverlay(
+                    outputClusters, m_historicalFeedback,
+                    m_pElevationMapGroundFilter->GetConfig(),hdmap_polygons, loc_pose);
+            }
+
+            // 每帧结束：用当前 Track + 当前位姿维护地图锚点侧表（下一帧反馈使用）
+            UpdateMapAnchors(loc_pose, have_pose);
+        }
+
         // ── Debug: 第九层 跟踪结果点云叠加图 (TrackedObstacle 版本) ──
         // 需要 DebugViewer 配置 TrackerOverlay.enable=1 才会绘制
         if (m_debugViewer)
@@ -1091,7 +1106,7 @@ void SutengDriver::ProcessPcapCloud(){
 
             if (have_pose && loc_pose.valid && !hdmap_polygons.empty())
             {
-                m_debugViewer->DrawAllOverlay(*pGroundCloud, *pObstacleCloud,
+                m_debugViewer->DrawMapAndAllOverlay(*pGroundCloud, *pObstacleCloud,
                                            m_tracker.vtrackings,
                                            m_pElevationMapGroundFilter->GetConfig(),
                                            hdmap_polygons,
@@ -1168,13 +1183,239 @@ void SutengDriver::ProcessPcapCloud(){
 }
 
 
+// ============================================================================
+// Historical Feedback (Phase 2/3 Quick Validation)：地图锚点维护 + 当前 Grid 投影
+// ============================================================================
+
+// 每帧结束：把本帧匹配成功(lastSeen==0)的 Track 用当前位姿锚定到地图系；
+// 匹配失败(miss)的 Track 冻结其地图锚点；被 tracker 删除的 Track 同步删除锚点。
+void SutengDriver::UpdateMapAnchors(const LocalizationManager::Pose& pose, bool pose_valid)
+{
+    if (!pose_valid)
+    {
+        // 定位无效：冻结所有锚点（不更新），保留历史最后一次地图位置
+        return;
+    }
+
+    VehiclePose vpose;
+    vpose.x = pose.x;
+    vpose.y = pose.y;
+    vpose.heading_deg = pose.heading_deg;
+
+    std::unordered_set<int> alive_ids;
+    for (const auto& t : m_tracker.vtrackings)
+    {
+        alive_ids.insert(t.id);
+
+        MapAnchoredTrack* anchor = nullptr;
+        for (auto& a : m_mapTracks)
+        {
+            if (a.id == t.id) { anchor = &a; break; }
+        }
+        if (anchor == nullptr)
+        {
+            m_mapTracks.push_back(MapAnchoredTrack());
+            anchor = &m_mapTracks.back();
+            anchor->id = t.id;
+        }
+
+        if (t.lastSeen == 0)
+        {
+            // 本帧匹配成功：用当前位姿更新地图锚点
+            CoordinateTransformer::vehicleToMap(t.pos_x, t.pos_y, vpose,
+                                                anchor->map_x, anchor->map_y);
+            anchor->has_map = true;
+            anchor->depth = t.depth;
+            anchor->width = t.width;
+            for (int j = 0; j < 4; ++j)
+            {
+                double mx = 0.0, my = 0.0;
+                CoordinateTransformer::vehicleToMap(t.corners[j].x, t.corners[j].y,
+                                                    vpose, mx, my);
+                anchor->map_corners[j].x = static_cast<float>(mx);
+                anchor->map_corners[j].y = static_cast<float>(my);
+            }
+            anchor->age = t.age;
+            anchor->lastSeen = t.lastSeen;
+        }
+        else
+        {
+            // miss：冻结锚点，仅同步 lastSeen（供调试观察生命周期）
+            anchor->lastSeen = t.lastSeen;
+        }
+    }
+
+    // 删除 tracker 已移除的 Track 的锚点
+    m_mapTracks.erase(
+        std::remove_if(m_mapTracks.begin(), m_mapTracks.end(),
+                       [&alive_ids](const MapAnchoredTrack& a) {
+                           return alive_ids.find(a.id) == alive_ids.end();
+                       }),
+        m_mapTracks.end());
+}
+
+// 本帧：把历史 Map Track 投影到当前雷达系 → rasterize 到当前 Grid → overlap 统计 + 日志
+void SutengDriver::ComputeHistoricalFeedback(
+    const std::vector<GridCluster>& clusters,
+    const LocalizationManager::Pose& pose,
+    bool pose_valid,
+    std::vector<HistoricalFeedbackRegion>& out)
+{
+    out.clear();
+
+    // 定位无效：Hard gate —— Historical Feedback 禁用（见架构 §29）
+    if (!pose_valid)
+    {
+        LOG_RAW("[HistoricalFeedback] localization invalid -> disabled (tracks=%zu)\n",
+                m_mapTracks.size());
+        return;
+    }
+
+    const ElevationGridConfig& cfg = m_pElevationMapGroundFilter->GetConfig();
+    const int rows = m_pElevationMapGroundFilter->GetGridRows();
+    const int cols = m_pElevationMapGroundFilter->GetGridCols();
+    const float eff_x_min = m_pElevationMapGroundFilter->GetEffectiveRoiXMin();
+
+    VehiclePose vpose;
+    vpose.x = pose.x;
+    vpose.y = pose.y;
+    vpose.heading_deg = pose.heading_deg;
+
+    // 投影：map anchor → current radar frame → rasterize
+    for (const auto& anchor : m_mapTracks)
+    {
+        if (!anchor.has_map) continue;
+        if (anchor.age < kMinTrackAgeForFeedback) continue;
+
+        HistoricalFeedbackRegion r;
+        r.track_id = anchor.id;
+        r.has_map_anchor = true;
+        r.length = anchor.depth;
+        r.width = anchor.width;
+
+        double cx = 0.0, cy = 0.0;
+        CoordinateTransformer::mapToVehicle(anchor.map_x, anchor.map_y, vpose, cx, cy);
+        r.center_x = static_cast<float>(cx);
+        r.center_y = static_cast<float>(cy);
+
+        for (int j = 0; j < 4; ++j)
+        {
+            double vx = 0.0, vy = 0.0;
+            CoordinateTransformer::mapToVehicle(
+                static_cast<double>(anchor.map_corners[j].x),
+                static_cast<double>(anchor.map_corners[j].y), vpose, vx, vy);
+            r.corners[j].x = static_cast<float>(vx);
+            r.corners[j].y = static_cast<float>(vy);
+        }
+
+        RasterizeQuadToGrid(r.corners, cfg, eff_x_min, rows, cols,
+                            r.projected_cell_indices);
+        r.valid = !r.projected_cell_indices.empty();
+        out.push_back(r);
+    }
+
+    // 当前 cluster cell → cluster id 映射 + 当前 cell 集合（用于 overlap / 全局 union）
+    std::unordered_map<int, int> cell_to_cluster;
+    std::unordered_set<int> current_cells;
+    for (const auto& cl : clusters)
+    {
+        for (int idx : cl.cell_indices)
+        {
+            current_cells.insert(idx);
+            if (cell_to_cluster.find(idx) == cell_to_cluster.end())
+            {
+                cell_to_cluster[idx] = cl.id;
+            }
+        }
+    }
+
+    // 逐 Track 的 overlap 统计 + 日志
+    int overlap_tracks = 0;
+    int recovery_candidate_tracks = 0;
+
+    for (auto& r : out)
+    {
+        r.historical_cells = static_cast<int>(r.projected_cell_indices.size());
+
+        std::unordered_map<int, int> overlap_by_cluster;
+        for (int idx : r.projected_cell_indices)
+        {
+            auto it = cell_to_cluster.find(idx);
+            if (it != cell_to_cluster.end())
+            {
+                overlap_by_cluster[it->second]++;
+            }
+        }
+
+        int best_cluster = -1;
+        int best_overlap = 0;
+        for (const auto& kv : overlap_by_cluster)
+        {
+            if (kv.second > best_overlap)
+            {
+                best_overlap = kv.second;
+                best_cluster = kv.first;
+            }
+        }
+
+        r.matched_cluster_id = best_cluster;
+        r.overlap_cells = best_overlap;
+
+        r.current_cells = 0;
+        if (best_cluster >= 0)
+        {
+            for (const auto& cl : clusters)
+            {
+                if (cl.id == best_cluster)
+                {
+                    r.current_cells = static_cast<int>(cl.cell_indices.size());
+                    break;
+                }
+            }
+        }
+
+        r.fused_cells = r.current_cells + r.historical_cells - r.overlap_cells;
+
+        if (r.matched_cluster_id >= 0) overlap_tracks++;
+        else recovery_candidate_tracks++;
+
+        LOG_RAW("[HistoricalFeedback] Track=%d CurrentCluster=%d current_cells=%d historical_cells=%d overlap_cells=%d fused_cells=%d\n",
+                r.track_id, r.matched_cluster_id, r.current_cells,
+                r.historical_cells, r.overlap_cells, r.fused_cells);
+    }
+
+    // 全局统计（union 去重，避免多 Track 重叠同一 Cluster 时重复计数）
+    std::unordered_set<int> hist_all;
+    for (const auto& r : out)
+    {
+        for (int idx : r.projected_cell_indices)
+        {
+            hist_all.insert(idx);
+        }
+    }
+
+    int overlap_total = 0;
+    for (int idx : hist_all)
+    {
+        if (current_cells.find(idx) != current_cells.end())
+        {
+            overlap_total++;
+        }
+    }
+    const int hist_only_total = static_cast<int>(hist_all.size()) - overlap_total;
+    const int fused_total = static_cast<int>(current_cells.size()) + hist_only_total;
+
+    LOG_RAW("[HistoricalFeedback] tracks=%zu historical_valid_tracks=%zu overlap_tracks=%d recovery_candidate_tracks=%d historical_only_cells=%d current_total_cells=%zu fused_total_cells=%d\n",
+            m_mapTracks.size(), out.size(), overlap_tracks, recovery_candidate_tracks,
+            hist_only_total, current_cells.size(), fused_total);
+}
+
+
 void SutengDriver::Free(){
 
     delete m_pCommonGroundDetection;
     // m_pCommonGroundDetection = nullptr;
 }
-
-
 void SutengDriver::Stop()
 {
     m_running = false;

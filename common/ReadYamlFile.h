@@ -219,6 +219,7 @@ struct SELF_DEBUG_CONFIG{
     DEBUG_VIEWER_CONFIG BoundingBox;         // 包围盒俯视图
     DEBUG_VIEWER_CONFIG Overlay;             // 最终点云叠加图
     DEBUG_VIEWER_CONFIG TrackerOverlay;      // 第九层: 跟踪结果点云叠加图
+    DEBUG_VIEWER_CONFIG HistoricalFeedback;  // 第十层: Historical Feedback 验证图（Current ∪ Historical → Fused）
 
     // ======== hdmap过滤 ========
     int mapFilterModel;

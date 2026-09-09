@@ -1327,9 +1327,9 @@ void ElevationMapGroundFilter::ComputeGroundReference()
     auto& zs = column_ground_zs[col];
         if (!zs.empty()) {
             std::sort(zs.begin(), zs.end());
-            LOG_RAW("[Test-GroundRef-col%d] n=%zu min=%.3f median=%.3f max=%.3f\n",
-                    col, zs.size(), zs.front(), 
-                    zs[zs.size()/2], zs.back());
+            // LOG_RAW("[Test-GroundRef-col%d] n=%zu min=%.3f median=%.3f max=%.3f\n",
+            //         col, zs.size(), zs.front(), 
+            //         zs[zs.size()/2], zs.back());
         }
     }
 
@@ -2067,12 +2067,16 @@ std::vector<GridCluster> ElevationMapGroundFilter::ClusterObstacleGrid()
     for(size_t i=0; i < clusters.size(); i++){
 
         if(!clusters[i].has_obb){
-            LOG_RAW("Cluster id: %d: Center(%.2f, %.2f, %.2f), height= %.2f, 由 %d 个cell组成, 总point_num: %d\n", 
-            clusters[i].id, clusters[i].center_x, clusters[i].center_y, clusters[i].center_z, clusters[i].height, clusters[i].cell_indices.size(), clusters[i].point_num);
+            LOG_RAW("Cluster id: %d: Center(%.2f, %.2f, %.2f), height= %.2f, (len= %.2f, width= %.2f), 由 %d 个cell组成, 总point_num: %d\n", 
+            clusters[i].id, clusters[i].center_x, clusters[i].center_y, clusters[i].center_z, clusters[i].height, 
+            clusters[i].length, clusters[i].width,
+            clusters[i].cell_indices.size(), clusters[i].point_num);
         }
         else{
-             LOG_RAW("Cluster id: %d:[OBB] Center(%.2f, %.2f, %.2f), height= %.2f, 由 %d 个cell组成, 总point_num: %d\n", 
-            clusters[i].id, clusters[i].center_x, clusters[i].center_y, clusters[i].center_z, clusters[i].height, clusters[i].cell_indices.size(), clusters[i].point_num);
+            LOG_RAW("Cluster id: %d:[OBB] Center(%.2f, %.2f, %.2f), height= %.2f, (len= %.2f, width= %.2f), 由 %d 个cell组成, 总point_num: %d\n", 
+            clusters[i].id, clusters[i].obb_center_x, clusters[i].obb_center_y, clusters[i].center_z, clusters[i].height,
+            clusters[i].obb_length, clusters[i].obb_width,
+            clusters[i].cell_indices.size(), clusters[i].point_num);
         }
         
     }
@@ -2386,10 +2390,19 @@ void ElevationMapGroundFilter::ComputeClusterOBB(GridCluster& cluster) const
     points.reserve(n);
     for (int idx : cluster.cell_indices)
     {
-        float cx, cy;
-        GridIndexToWorld(idx, cx, cy);
-        points.emplace_back(cx, cy);
+        // if(m_vGridCell[idx].point_num >= 10 ){
+
+            float cx, cy;
+            GridIndexToWorld(idx, cx, cy);
+            points.emplace_back(cx, cy);
+        // }
+        // else{
+        //     int row = idx / m_grid_cols;
+        //     int col = idx % m_grid_cols;
+        //     LOG_RAW(" 剔除idx=[%d, %d] ",col,row);
+        // }
     }
+    // LOG_RAW("\n");
 
     // ── Step 2: 计算均值 ──
     Eigen::Vector2f mean = Eigen::Vector2f::Zero();
@@ -2426,6 +2439,56 @@ void ElevationMapGroundFilter::ComputeClusterOBB(GridCluster& cluster) const
     // 主轴 (λ 更大) → col(1), 次轴 (λ 更小) → col(0)
     Eigen::Vector2f axis_primary   = eigen_vecs.col(1);  // obb_length 方向
     Eigen::Vector2f axis_secondary = eigen_vecs.col(0);  // obb_width 方向
+
+
+    float lambda_min = eigen_vals(0);
+    float lambda_max = eigen_vals(1);
+
+    float orientation_confidence =
+        (lambda_max - lambda_min) /
+        std::max(lambda_max + lambda_min, 1e-6f);
+
+    float raw_angle =
+        std::atan2(axis_primary.y(), axis_primary.x());
+
+    // printf(
+    //     "[OBB-PCA] "
+    //     "cluster=%d "
+    //     "cells=%zu "
+    //     "mean=(%.3f, %.3f) "
+    //     "lambda=(%.6f, %.6f) "
+    //     "axis_primary=(%.4f, %.4f) "
+    //     "raw_angle=%.2fdeg "
+    //     "confidence=%.3f\n",
+    //     cluster.id,
+    //     n,
+    //     mean.x(),
+    //     mean.y(),
+    //     lambda_min,
+    //     lambda_max,
+    //     axis_primary.x(),
+    //     axis_primary.y(),
+    //     raw_angle * 180.0f / static_cast<float>(M_PI),
+    //     orientation_confidence
+    // );
+
+    // printf("[OBB-CELLS] cluster=%d:", cluster.id);
+
+    for (int idx : cluster.cell_indices)
+    {
+        int row = idx / m_grid_cols;
+        int col = idx % m_grid_cols;
+
+        float cx, cy;
+        GridIndexToWorld(idx, cx, cy);
+
+        // printf(" id=[%d,%d]->(%.2f,%.2f), point_num=%d, min_z=%.2f, max_z=%.2f, height_diff=%.2f \n", col, row, cx, cy,
+        // m_vGridCell[idx].point_num, m_vGridCell[idx].min_z, m_vGridCell[idx].max_z, m_vGridCell[idx].height_range
+        // );
+    }
+
+    printf("\n");
+
 
     // ── Step 5: 投影求 OBB 尺寸 ──
     float min_pri =  FLT_MAX, max_pri = -FLT_MAX;

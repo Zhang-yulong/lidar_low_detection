@@ -264,6 +264,7 @@ bool YamlReader::LoadConfig(SELF_DEBUG_CONFIG& config)
             config.BoundingBox        = readDebugCfg(DebugViewerNode, "BoundingBox");
             config.Overlay            = readDebugCfg(DebugViewerNode, "Overlay");
             config.TrackerOverlay     = readDebugCfg(DebugViewerNode, "TrackerOverlay");
+            config.HistoricalFeedback = readDebugCfg(DebugViewerNode, "HistoricalFeedback");
         }
         else{
             throw std::runtime_error("Error: Lack <DebugViewer>");
@@ -292,7 +293,7 @@ bool YamlReader::LoadConfig(SELF_DEBUG_CONFIG& config)
         // mapPath 为空 -> 使用默认地图地址（/etc/echiev/hdmap/hdmap.bin）
         if (config.mapPath.empty())
         {
-            config.mapPath = "/etc/echiev/hdmap/hdmap.bin";
+            config.mapPath = "/etc/echiev/hdmap/hdmap.bin";  ////etc/echiev/from_11_hdmap/hdmap.bin
         }
 
         // ======== Localization（新增，可选节）========

@@ -7,6 +7,7 @@
 #include "localization_manager.h"
 #include "hdmap_manager.h"
 #include "coordinate_transformer.h"
+#include "historical_feedback.h"
 
 #include <vector>
 #include <string>
@@ -178,9 +179,25 @@ public:
                                const LocalizationManager::Pose& pose,
                                const ElevationGridConfig& gridCfg) const;
 
-    void DrawAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& groundCloud,
+    void DrawMapAndAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& groundCloud,
                      const pcl::PointCloud<pcl::PointXYZI>& obstacleCloud,
                      const std::vector<TrackedObstacle>& trackers,
+                     const ElevationGridConfig& gridCfg,
+                     const std::vector<std::vector<STR_POINT2F>>& mapPolygons,
+                     const LocalizationManager::Pose& pose);
+
+    /**
+     * @brief 10. Historical Feedback 验证图（Quick Validation）
+     *        三层显示：
+     *          Layer 1: Current Cluster cell（琥珀色 + C{id} 标签）
+     *          Layer 2: Historical Feedback projected cell（品红色 + T{track_id} 标签 + OBB 轮廓）
+     *          Layer 3: Overlap cell（黄色）—— Fused = Current ∪ Historical
+     *        数据来源: outputClusters + HistoricalFeedbackRegion（见 historical_feedback.h）
+     *        调用时机: 本帧 Cluster + Historical Feedback 投影完成后
+     */
+    void DrawHistoricalFeedbackOverlay(
+                     const std::vector<GridCluster>& clusters,
+                     const std::vector<HistoricalFeedbackRegion>& feedback,
                      const ElevationGridConfig& gridCfg,
                      const std::vector<std::vector<STR_POINT2F>>& mapPolygons,
                      const LocalizationManager::Pose& pose);

@@ -11,6 +11,7 @@
 #include "VisFrameBuffer.h"
 #include "hdmap_manager.h"
 #include "hdmap_filter.h"
+#include "historical_feedback.h"
 #include <thread>
 #include <atomic>
 #include "ReadYamlFile.h"
@@ -113,6 +114,22 @@ private:
     void ConvertClustersToTrackedObstacles(
         const std::vector<GridCluster>& clusters,
         std::vector<TrackedObstacle>& out) const;
+
+    // ---- Historical Feedback（Phase 2/3 Quick Validation，实验性，不影响正式输出）----
+    // 地图系锚定的历史 Track 侧表（每帧 Track 匹配成功时更新，miss 时冻结）
+    std::vector<MapAnchoredTrack> m_mapTracks;
+    // 本帧投影到当前 Grid 的 Historical Feedback Region（仅供 Debug 可视化/日志）
+    std::vector<HistoricalFeedbackRegion> m_historicalFeedback;
+
+    /// 将历史 Map Track 投影到当前雷达系并 rasterize 到当前 Grid，计算 overlap 统计并打印日志
+    void ComputeHistoricalFeedback(
+        const std::vector<GridCluster>& clusters,
+        const LocalizationManager::Pose& pose,
+        bool pose_valid,
+        std::vector<HistoricalFeedbackRegion>& out);
+
+    /// 每帧结束后用当前 Track + 当前位姿维护地图锚点侧表（miss 时冻结）
+    void UpdateMapAnchors(const LocalizationManager::Pose& pose, bool pose_valid);
 
     VisFrameBuffer m_visBuffer;    // 帧缓冲：工作线程 → 主线程
 

@@ -10,6 +10,8 @@
 #include <cmath>
 #include <algorithm>
 #include <sys/stat.h>
+#include <unordered_set>
+#include <unordered_map>
 
 // #include "ReadYamlFile.h"
 // #include "ElevationMapGroundFilter.h"
@@ -1295,7 +1297,7 @@ void DebugViewer::DrawClusterOverlay(const pcl::PointCloud<pcl::PointXYZI>& grou
         }
     }
 
-    // 绘制 cluster 包围盒 (白色)
+    // 绘制 cluster 包围盒 (车道外白色，车道内紫色)
     for (size_t i = 0; i < clusters.size(); ++i)
     {
         const auto& cluster = clusters[i];
@@ -1310,7 +1312,11 @@ void DebugViewer::DrawClusterOverlay(const pcl::PointCloud<pcl::PointXYZI>& grou
                              px, py, gridCfg);
                 pts[j] = cv::Point(px, py);
             }
-            cv::polylines(image, pts, true, cv::Scalar(255, 255, 255), 1);
+
+            if(pose.valid && !clusters[i].in_road)
+                cv::polylines(image, pts, true, cv::Scalar(255, 255, 255), 1); //白色
+            else
+                cv::polylines(image, pts, true, cv::Scalar(255,0, 220), 3);    //色
         }
         else
         {
@@ -1318,7 +1324,12 @@ void DebugViewer::DrawClusterOverlay(const pcl::PointCloud<pcl::PointXYZI>& grou
             WorldToPixel(cluster.min_x, cluster.min_y, x1, y1, gridCfg);
             WorldToPixel(cluster.max_x, cluster.max_y, x2, y2, gridCfg);
             cv::Rect rect(cv::Point(x1, y2), cv::Point(x2, y1));
-            cv::rectangle(image, rect, cv::Scalar(255, 255, 255), 1);
+            
+            if(pose.valid && !clusters[i].in_road)
+                cv::rectangle(image, rect, cv::Scalar(255, 255, 255), 1);
+            else
+                cv::rectangle(image, rect, cv::Scalar(255, 0, 220), 3);
+
         }
 
         // 中心点 (黄色)
@@ -1332,7 +1343,7 @@ void DebugViewer::DrawClusterOverlay(const pcl::PointCloud<pcl::PointXYZI>& grou
         DrawHdMapOverlay(image, mapPolygons, pose, gridCfg);
 
         // // // 【临时调试】HDMap 叠加校准（1m 参考框 + 最近边界点，排查完成后删除）
-        // DrawHdMapOverlayCalib(image, mapPolygons, pose, gridCfg);
+        DrawHdMapOverlayCalib(image, mapPolygons, pose, gridCfg);
 
     }
 
@@ -1521,10 +1532,10 @@ void DebugViewer::DrawTrackOverlay(const pcl::PointCloud<pcl::PointXYZI>& ground
     std::vector<std::vector<STR_POINT2F>> empty_map_polygons;
     LocalizationManager::Pose empty_pose;
     empty_pose.valid = false;
-    DrawAllOverlay(groundCloud, obstacleCloud, trackers, gridCfg, empty_map_polygons, empty_pose);
+    DrawMapAndAllOverlay(groundCloud, obstacleCloud, trackers, gridCfg, empty_map_polygons, empty_pose);
 }
 
-void DebugViewer::DrawAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& groundCloud,
+void DebugViewer::DrawMapAndAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& groundCloud,
                                const pcl::PointCloud<pcl::PointXYZI>& obstacleCloud,
                                const std::vector<TrackedObstacle>& trackers,
                                const ElevationGridConfig& gridCfg,
@@ -1627,6 +1638,170 @@ void DebugViewer::DrawAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& groundCl
                 cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
 
     ShowOrSave(image, "TrackerOverlay", viewCfg);
+}
+
+// ============================================================================
+// 10. DrawHistoricalFeedbackOverlay —— Historical Feedback 验证图（Quick Validation）
+// ============================================================================
+//
+// 三层显示（颜色定义，便于日志/图对照）：
+//   - Current Cluster cell : 琥珀色 cv::Vec3b(0, 200, 255)，标签 "C{id}"
+//   - Historical cell      : 品红色 cv::Vec3b(200, 0, 200)，标签 "T{track_id}" + 白色 OBB 轮廓
+//   - Overlap cell         : 黄色   cv::Vec3b(0, 255, 255)
+//   - Fused = Current ∪ Historical（Overlap 只画一次）
+//
+// 本图不修改任何算法状态，仅用于验证 Historical Track → Current Grid 的投影效果。
+// ============================================================================
+void DebugViewer::DrawHistoricalFeedbackOverlay(
+    const std::vector<GridCluster>& clusters,
+    const std::vector<HistoricalFeedbackRegion>& feedback,
+    const ElevationGridConfig& gridCfg,
+    const std::vector<std::vector<STR_POINT2F>>& mapPolygons,
+    const LocalizationManager::Pose& pose)
+{
+    const auto& viewCfg = m_DV_config.HistoricalFeedback;
+    if (!viewCfg.enable) return;
+
+    // 与 1~9 层一致: 计算图像几何(含车前盲区偏移)与窗口宽高
+    int rows, cols, px_blind_offset, img_w, img_h;
+    ComputeGridImageGeometry(gridCfg, rows, cols, px_blind_offset, img_w, img_h);
+
+    // 深灰背景
+    cv::Mat image(img_h, img_w, CV_8UC3, cv::Scalar(20, 20, 20));
+
+    // 背景网格 + 坐标轴 (先画以免遮挡 cell)
+    AddBackGround(image, img_w, img_h, gridCfg);
+
+    // 有效 ROI 边框 (与 1~9 层一致)
+    cv::rectangle(image,
+                  cv::Point(px_blind_offset + (expand_img_w / 2), (expand_img_h / 2)),
+                  cv::Point(px_blind_offset + cols * kGridPixelScale + (expand_img_w / 2) - 1,
+                            rows * kGridPixelScale + (expand_img_h / 2) - 1),
+                  cv::Scalar(80, 80, 80), 1);
+
+    // 有效 ROI X 起点（与 BuildGrid 一致：max(roi_x_min, car_half_x + body_filter_x_threshold)）
+    const float eff_x_min = std::max(gridCfg.roi_x_min,
+                                     gridCfg.car_half_x + gridCfg.body_filter_x_threshold);
+
+    // cell 线性索引 → 像素块填充（cell 中心映射，再回退半格得到左上角）
+    auto FillCell = [&](int idx, const cv::Vec3b& color) {
+        const int r = idx / cols;
+        const int c = idx % cols;
+        const float cx = eff_x_min + (static_cast<float>(c) + 0.5f) * gridCfg.grid_resolution;
+        const float cy = gridCfg.roi_y_min + (static_cast<float>(r) + 0.5f) * gridCfg.grid_resolution;
+        int px = 0, py = 0;
+        WorldToPixel(cx, cy, px, py, gridCfg);
+        cv::Rect roi(px - kGridPixelScale / 2, py - kGridPixelScale / 2,
+                     kGridPixelScale, kGridPixelScale);
+        roi &= cv::Rect(0, 0, img_w, img_h);
+        if (roi.width > 0 && roi.height > 0)
+        {
+            image(roi) = color;
+        }
+    };
+
+    // 收集当前 cluster cell 集合 + cell→cluster 映射
+    std::unordered_set<int> current_cells;
+    std::unordered_map<int, int> cell_to_cluster;
+    for (const auto& cl : clusters)
+    {
+        for (int idx : cl.cell_indices)
+        {
+            current_cells.insert(idx);
+            if (cell_to_cluster.find(idx) == cell_to_cluster.end())
+            {
+                cell_to_cluster[idx] = cl.id;
+            }
+        }
+    }
+
+    // 收集 historical cell 集合
+    std::unordered_set<int> hist_cells;
+    for (const auto& r : feedback)
+    {
+        if (!r.valid) continue;
+        for (int idx : r.projected_cell_indices)
+        {
+            hist_cells.insert(idx);
+        }
+    }
+
+    // ---- Layer 2: Historical-only cell（品红）----
+    for (int idx : hist_cells)
+    {
+        if (current_cells.find(idx) == current_cells.end())
+        {
+            FillCell(idx, cv::Vec3b(200, 0, 200));
+        }
+    }
+
+    // ---- Layer 1: Current-only cell（琥珀）----
+    for (int idx : current_cells)
+    {
+        if (hist_cells.find(idx) == hist_cells.end())
+        {
+            FillCell(idx, cv::Vec3b(0, 200, 255));
+        }
+    }
+
+    // ---- Layer 3: Overlap cell（黄，覆盖在上面）----
+    size_t overlap_cnt = 0;
+    for (int idx : hist_cells)
+    {
+        if (current_cells.find(idx) != current_cells.end())
+        {
+            FillCell(idx, cv::Vec3b(0, 255, 255));
+            overlap_cnt++;
+        }
+    }
+
+    // ---- Historical OBB 轮廓（白色）+ T{track_id} 标签 ----
+    for (const auto& r : feedback)
+    {
+        if (!r.valid) continue;
+
+        std::vector<cv::Point> pts(4);
+        for (int j = 0; j < 4; ++j)
+        {
+            int px = 0, py = 0;
+            WorldToPixel(r.corners[j].x, r.corners[j].y, px, py, gridCfg);
+            pts[j] = cv::Point(px, py);
+        }
+        cv::polylines(image, pts, true, cv::Scalar(255, 255, 255), 1);
+
+        int cx = 0, cy = 0;
+        WorldToPixel(r.center_x, r.center_y, cx, cy, gridCfg);
+        cv::putText(image, "T" + std::to_string(r.track_id),
+                    cv::Point(cx + 6, cy + 10),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 255, 255), 1);
+    }
+
+    // ---- Current Cluster C{id} 标签 ----
+    for (const auto& cl : clusters)
+    {
+        int px = 0, py = 0;
+        WorldToPixel(cl.center_x, cl.center_y, px, py, gridCfg);
+        cv::putText(image, "C" + std::to_string(cl.id),
+                    cv::Point(px + 6, py - 6),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 255, 255), 1);
+    }
+
+    // 地图白线叠加（只绘制，不改变算法状态）
+    DrawHdMapOverlay(image, mapPolygons, pose, gridCfg);
+
+    // // 【临时调试】HDMap 叠加校准（1m 参考框 + 最近边界点，排查完成后删除）
+    DrawHdMapOverlayCalib(image, mapPolygons, pose, gridCfg);
+
+    const size_t fused_cnt = current_cells.size() + hist_cells.size() - overlap_cnt;
+
+    char title[128];
+    snprintf(title, sizeof(title),
+             "HistoricalFeedback Cur=%zu Hist=%zu Overlap=%zu Fused=%zu",
+             current_cells.size(), hist_cells.size(), overlap_cnt, fused_cnt);
+    cv::putText(image, title, cv::Point(10, 20),
+                cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+
+    ShowOrSave(image, "HistoricalFeedback", viewCfg);
 }
 
 }  // namespace Lidar_Low_Detection
