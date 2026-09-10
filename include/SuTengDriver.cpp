@@ -1,5 +1,8 @@
 #include "SuTengDriver.h"
 #include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <string>
 #include <pcl/common/transforms.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl/filters/conditional_removal.h>
@@ -1254,7 +1257,11 @@ void SutengDriver::UpdateMapAnchors(const LocalizationManager::Pose& pose, bool 
         m_mapTracks.end());
 }
 
-// 本帧：把历史 Map Track 投影到当前雷达系 → rasterize 到当前 Grid → overlap 统计 + 日志
+// 本帧：把历史 Map Track（地图锚点）投影到当前雷达系得到预测位置 A
+//      → A 转当前 Grid Base Cell → 3×3 邻居搜索 → 候选当前 Cluster → 关联
+// 关联：优先 SAME_TRACK_ID（当前 tracker 同 ID 且本帧匹配），否则几何距离（带门控）。
+// 上一阶段的 OBB rasterize / overlap / fused_cells 统计保留为 secondary。
+// 本帧结果只进日志 + DebugViewer（Debug / Validation only）。
 void SutengDriver::ComputeHistoricalFeedback(
     const std::vector<GridCluster>& clusters,
     const LocalizationManager::Pose& pose,
@@ -1263,10 +1270,10 @@ void SutengDriver::ComputeHistoricalFeedback(
 {
     out.clear();
 
-    // 定位无效：Hard gate —— Historical Feedback 禁用（见架构 §29）
+    // 定位无效：Hard gate —— Historical Feedback 禁用（锚点在 UpdateMapAnchors 中冻结）
     if (!pose_valid)
     {
-        LOG_RAW("[HistoricalFeedback] localization invalid -> disabled (tracks=%zu)\n",
+        LOG_RAW("[HistoricalAssociation] localization invalid -> disabled (map_tracks=%zu)\n",
                 m_mapTracks.size());
         return;
     }
@@ -1275,29 +1282,76 @@ void SutengDriver::ComputeHistoricalFeedback(
     const int rows = m_pElevationMapGroundFilter->GetGridRows();
     const int cols = m_pElevationMapGroundFilter->GetGridCols();
     const float eff_x_min = m_pElevationMapGroundFilter->GetEffectiveRoiXMin();
+    const float res = cfg.grid_resolution;
+    if (res <= 0.0f || rows <= 0 || cols <= 0) return;
+    const float inv_res = 1.0f / res;
 
     VehiclePose vpose;
     vpose.x = pose.x;
     vpose.y = pose.y;
     vpose.heading_deg = pose.heading_deg;
 
-    // 投影：map anchor → current radar frame → rasterize
+    // ---- 当前帧索引：cell → cluster；cluster id → clusters 下标 ----
+    // 参考中心 = has_obb ? obb_center : center（与 ConvertClustersToTrackedObstacles 一致）
+    std::unordered_map<int, int> cell_to_cluster;
+    std::unordered_map<int, int> cluster_pos;
+    for (size_t i = 0; i < clusters.size(); ++i)
+    {
+        const GridCluster& cl = clusters[i];
+        cluster_pos[cl.id] = static_cast<int>(i);
+        for (int idx : cl.cell_indices)
+        {
+            if (cell_to_cluster.find(idx) == cell_to_cluster.end())
+            {
+                cell_to_cluster[idx] = cl.id;
+            }
+        }
+    }
+
+    auto refCenterOf = [](const GridCluster& c) -> std::pair<float, float>
+    {
+        if (c.has_obb) return std::make_pair(c.obb_center_x, c.obb_center_y);
+        return std::make_pair(c.center_x, c.center_y);
+    };
+
+    const auto findClusterCenter = [&](int cid, float& cx, float& cy) -> bool
+    {
+        auto it = cluster_pos.find(cid);
+        if (it == cluster_pos.end()) return false;
+        const GridCluster& c = clusters[it->second];
+        const std::pair<float, float> cc = refCenterOf(c);
+        cx = cc.first;
+        cy = cc.second;
+        return true;
+    };
+
+    // 逐 Track 关联统计
+    int same_id_match    = 0;
+    int geometric_match  = 0;
+    int no_detection_cnt = 0;
+
     for (const auto& anchor : m_mapTracks)
     {
         if (!anchor.has_map) continue;
+        // 临时年龄门槛：仍在用 anchor.age，但其语义是"最后一次匹配成功时的累计匹配帧数"，
+        // 不是"连续观测帧数"。因此日志中同时打印 age / lastSeen / live 实时状态。
         if (anchor.age < kMinTrackAgeForFeedback) continue;
 
         HistoricalFeedbackRegion r;
         r.track_id = anchor.id;
         r.has_map_anchor = true;
         r.length = anchor.depth;
-        r.width = anchor.width;
+        r.width  = anchor.width;
 
-        double cx = 0.0, cy = 0.0;
-        CoordinateTransformer::mapToVehicle(anchor.map_x, anchor.map_y, vpose, cx, cy);
-        r.center_x = static_cast<float>(cx);
-        r.center_y = static_cast<float>(cy);
+        // ---- Map Anchor → 当前 Radar：预测位置 A（本轮最重要的量） ----
+        double ax = 0.0, ay = 0.0;
+        CoordinateTransformer::mapToVehicle(anchor.map_x, anchor.map_y, vpose, ax, ay);
+        r.projected_x = static_cast<float>(ax);
+        r.projected_y = static_cast<float>(ay);
+        r.center_x = r.projected_x;   // 与旧字段对齐：center = A
+        r.center_y = r.projected_y;
 
+        // 4 角点投影（旧 OBB 区域层，secondary 可视化用）
         for (int j = 0; j < 4; ++j)
         {
             double vx = 0.0, vy = 0.0;
@@ -1307,107 +1361,253 @@ void SutengDriver::ComputeHistoricalFeedback(
             r.corners[j].x = static_cast<float>(vx);
             r.corners[j].y = static_cast<float>(vy);
         }
-
         RasterizeQuadToGrid(r.corners, cfg, eff_x_min, rows, cols,
                             r.projected_cell_indices);
-        r.valid = !r.projected_cell_indices.empty();
-        out.push_back(r);
-    }
+        r.valid = true;   // A 投影始终存在；即使完全在 ROI 外也记录（NO_CURRENT_DETECTION）
 
-    // 当前 cluster cell → cluster id 映射 + 当前 cell 集合（用于 overlap / 全局 union）
-    std::unordered_map<int, int> cell_to_cluster;
-    std::unordered_set<int> current_cells;
-    for (const auto& cl : clusters)
-    {
-        for (int idx : cl.cell_indices)
+        // ---- 当前 tracker 中同 ID 的 live track（实时 age / lastSeen / matched）----
+        const TrackedObstacle* live = nullptr;
+        for (const auto& t : m_tracker.vtrackings)
         {
-            current_cells.insert(idx);
-            if (cell_to_cluster.find(idx) == cell_to_cluster.end())
-            {
-                cell_to_cluster[idx] = cl.id;
-            }
+            if (t.id == anchor.id) { live = &t; break; }
         }
-    }
-
-    // 逐 Track 的 overlap 统计 + 日志
-    int overlap_tracks = 0;
-    int recovery_candidate_tracks = 0;
-
-    for (auto& r : out)
-    {
-        r.historical_cells = static_cast<int>(r.projected_cell_indices.size());
-
-        std::unordered_map<int, int> overlap_by_cluster;
-        for (int idx : r.projected_cell_indices)
+        if (live)
         {
-            auto it = cell_to_cluster.find(idx);
-            if (it != cell_to_cluster.end())
-            {
-                overlap_by_cluster[it->second]++;
-            }
+            r.live_track_age      = live->age;
+            r.live_track_lastSeen = live->lastSeen;
+            r.live_track_matched  = (live->lastSeen == 0);
         }
 
-        int best_cluster = -1;
-        int best_overlap = 0;
-        for (const auto& kv : overlap_by_cluster)
-        {
-            if (kv.second > best_overlap)
-            {
-                best_overlap = kv.second;
-                best_cluster = kv.first;
-            }
-        }
+        // ---- A → 当前 Grid Base Cell ----
+        const int raw_row = static_cast<int>(std::floor((ay - cfg.roi_y_min) * inv_res));
+        const int raw_col = static_cast<int>(std::floor((ax - eff_x_min) * inv_res));
+        r.a_inside_grid = (raw_row >= 0 && raw_row < rows &&
+                           raw_col >= 0 && raw_col < cols);
+        // 距 ROI 边界 ≤1 cell 也可搜索（刚超出盲区/最远端时夹取到最近边界 cell）
+        const bool searchable =
+            (raw_row >= -1 && raw_row <= rows &&
+             raw_col >= -1 && raw_col <= cols);
+        r.a_searchable = searchable;
 
-        r.matched_cluster_id = best_cluster;
-        r.overlap_cells = best_overlap;
+        int br = raw_row, bc = raw_col;
+        if (br < 0) br = 0; else if (br > rows - 1) br = rows - 1;
+        if (bc < 0) bc = 0; else if (bc > cols - 1) bc = cols - 1;
+        r.base_row = br;
+        r.base_col = bc;
+        r.base_linear_index = br * cols + bc;
 
-        r.current_cells = 0;
-        if (best_cluster >= 0)
+        // ---- 3×3 Search Window：Base Cell + 8 邻居（边界 cell 做合法性检查）----
+        //     (-1,-1)(-1,0)(-1,+1) / (0,-1)(0,0)(0,+1) / (+1,-1)(+1,0)(+1,+1)
+        if (searchable)
         {
-            for (const auto& cl : clusters)
+            std::unordered_set<int> cand_set;
+            for (int dr = -1; dr <= 1; ++dr)
             {
-                if (cl.id == best_cluster)
+                for (int dc = -1; dc <= 1; ++dc)
                 {
-                    r.current_cells = static_cast<int>(cl.cell_indices.size());
+                    const int rr = br + dr;
+                    const int cc = bc + dc;
+                    if (rr < 0 || rr >= rows || cc < 0 || cc >= cols) continue;
+                    const int idx = rr * cols + cc;
+                    r.search_window_indices.push_back(idx);
+                    auto it = cell_to_cluster.find(idx);
+                    if (it != cell_to_cluster.end()) cand_set.insert(it->second);
+                }
+            }
+            r.candidate_cluster_ids.assign(cand_set.begin(), cand_set.end());
+            std::sort(r.candidate_cluster_ids.begin(), r.candidate_cluster_ids.end());
+        }
+
+        // ---- 候选 Cluster 几何信息（日志 + 几何 fallback）----
+        struct CandidateGeom { int id; float cx; float cy; float dist; };
+        std::vector<CandidateGeom> cands;
+        for (int cid : r.candidate_cluster_ids)
+        {
+            float ccx = 0.0f, ccy = 0.0f;
+            if (!findClusterCenter(cid, ccx, ccy)) continue;
+            const float dx = r.projected_x - ccx;
+            const float dy = r.projected_y - ccy;
+            CandidateGeom g;
+            g.id = cid; g.cx = ccx; g.cy = ccy;
+            g.dist = std::sqrt(dx * dx + dy * dy);
+            cands.push_back(g);
+        }
+
+        // ---- Association ----
+        int    matched   = -1;
+        int    reason    = kHistMatchNone;
+        bool   in_window = false;
+        float  mdist     = -1.0f;
+        float  mcx = 0.0f, mcy = 0.0f;
+
+        if (live && live->lastSeen == 0)
+        {
+            // 优先：SAME_TRACK_ID —— 同 ID track 本帧被 tracker 匹配成功。
+            // tracker 把检测中心拷给了 track.pos，故按"参考中心 ≈ live->pos"反查其 Cluster。
+            int cid_by_track = -1;
+            for (size_t i = 0; i < clusters.size(); ++i)
+            {
+                const GridCluster& cl = clusters[i];
+                const std::pair<float, float> cc = refCenterOf(cl);
+                const float dx = cc.first  - live->pos_x;
+                const float dy = cc.second - live->pos_y;
+                if (std::sqrt(dx * dx + dy * dy) < 0.05f)
+                {
+                    cid_by_track = cl.id;
                     break;
                 }
             }
+            if (cid_by_track >= 0)
+            {
+                matched   = cid_by_track;
+                reason    = kHistMatchSameTrackId;
+                in_window = (std::find(r.candidate_cluster_ids.begin(),
+                                       r.candidate_cluster_ids.end(), matched)
+                             != r.candidate_cluster_ids.end());
+                if (findClusterCenter(matched, mcx, mcy))
+                {
+                    const float dx = r.projected_x - mcx;
+                    const float dy = r.projected_y - mcy;
+                    mdist = std::sqrt(dx * dx + dy * dy);
+                }
+            }
         }
+        else if (live == nullptr && !cands.empty())
+        {
+            // 当前 tracker 已无同 ID 目标（可能被删后以新 ID 重建 / 或确实不同目标）。
+            // 几何 fallback：3×3 窗口内最近候选 + 距离门控（不无限制取最近）。
+            const CandidateGeom* best = nullptr;
+            for (const auto& g : cands)
+            {
+                if (!best || g.dist < best->dist) best = &g;
+            }
+            if (best && best->dist <= kHistAssociationMaxDistM)
+            {
+                matched   = best->id;
+                reason    = kHistMatchGeometric;
+                in_window = true;
+                mdist     = best->dist;
+                mcx       = best->cx;
+                mcy       = best->cy;
+            }
+        }
+        // 其余情况（live 存在但本帧 miss；或 live==null 且窗口无候选；或 A 完全 ROI 外）：
+        //   保持 matched=-1 → NO_CURRENT_DETECTION。禁止凭历史目标自动制造当前检测。
 
+        r.association_cluster_id = matched;
+        r.association_reason     = reason;
+        r.association_in_window  = in_window;
+        r.association_distance   = mdist;
+        r.matched_center_x = mcx;
+        r.matched_center_y = mcy;
+        r.no_current_detection  = (matched < 0);
+
+        // ---- secondary：旧 overlap/fused 统计（当前仅 debug 参考，不作主指标）----
+        r.historical_cells = static_cast<int>(r.projected_cell_indices.size());
+        r.current_cells    = 0;
+        r.overlap_cells    = 0;
+        r.matched_cluster_id = matched;
+        if (matched >= 0)
+        {
+            auto it = cluster_pos.find(matched);
+            if (it != cluster_pos.end())
+            {
+                const GridCluster& mc = clusters[it->second];
+                r.current_cells = static_cast<int>(mc.cell_indices.size());
+                for (int widx : r.search_window_indices)
+                {
+                    auto cit = cell_to_cluster.find(widx);
+                    if (cit != cell_to_cluster.end() && cit->second == matched)
+                    {
+                        r.overlap_cells++;
+                    }
+                }
+            }
+        }
         r.fused_cells = r.current_cells + r.historical_cells - r.overlap_cells;
+        if (r.fused_cells < 0) r.fused_cells = 0;
 
-        if (r.matched_cluster_id >= 0) overlap_tracks++;
-        else recovery_candidate_tracks++;
+        if (r.no_current_detection) no_detection_cnt++;
+        else if (reason == kHistMatchSameTrackId) same_id_match++;
+        else if (reason == kHistMatchGeometric)   geometric_match++;
 
-        LOG_RAW("[HistoricalFeedback] Track=%d CurrentCluster=%d current_cells=%d historical_cells=%d overlap_cells=%d fused_cells=%d\n",
-                r.track_id, r.matched_cluster_id, r.current_cells,
-                r.historical_cells, r.overlap_cells, r.fused_cells);
-    }
+        out.push_back(r);
 
-    // 全局统计（union 去重，避免多 Track 重叠同一 Cluster 时重复计数）
-    std::unordered_set<int> hist_all;
-    for (const auto& r : out)
-    {
-        for (int idx : r.projected_cell_indices)
+        // ==================== 日志（重点体现 3×3 搜索） ====================
+        const char* reason_str = (reason == kHistMatchSameTrackId) ? "SAME_TRACK_ID"
+                               : (reason == kHistMatchGeometric)   ? "GEOMETRIC_DISTANCE"
+                               : "NO_CURRENT_DETECTION";
+
+        LOG_RAW("[HistoricalAssociation] Track=%d age=%d lastSeen=%d live_age=%d live_lastSeen=%d live_matched=%d mapAnchor=(%.2f,%.2f)\n",
+                r.track_id, anchor.age, anchor.lastSeen,
+                r.live_track_age, r.live_track_lastSeen, (int)r.live_track_matched,
+                anchor.map_x, anchor.map_y);
+        LOG_RAW("[HistoricalAssociation]   ProjectedCurrent=(%.2f,%.2f) insideGrid=%d baseCell=(%d,%d) windowCells=%zu\n",
+                r.projected_x, r.projected_y, (int)r.a_inside_grid,
+                r.base_row, r.base_col, r.search_window_indices.size());
+
+        // 3×3 布局：'-'=窗口内无 cluster, 'X'=越界(未搜索), 数字=该 cell 所属当前 cluster
+        if (searchable)
         {
-            hist_all.insert(idx);
+            char tagbuf[3][16] = {{0}};
+            for (int dr = -1; dr <= 1; ++dr)
+            {
+                for (int dc = -1; dc <= 1; ++dc)
+                {
+                    const int rr = br + dr;
+                    const int cc = bc + dc;
+                    char* seg = tagbuf[dr + 1] + (dc + 1) * 5;
+                    if (rr < 0 || rr >= rows || cc < 0 || cc >= cols)
+                    {
+                        std::snprintf(seg, 6, "  X  ");
+                        continue;
+                    }
+                    auto it = cell_to_cluster.find(rr * cols + cc);
+                    if (it != cell_to_cluster.end())
+                        std::snprintf(seg, 6, " C%-2d ", it->second);
+                    else
+                        std::snprintf(seg, 6, "  -  ");
+                }
+            }
+            LOG_RAW("[HistoricalAssociation]   Search3x3 row-1: |%s|%s|%s|\n",
+                    tagbuf[0], tagbuf[0] + 5, tagbuf[0] + 10);
+            LOG_RAW("[HistoricalAssociation]   Search3x3 row  : |%s|%s|%s|\n",
+                    tagbuf[1], tagbuf[1] + 5, tagbuf[1] + 10);
+            LOG_RAW("[HistoricalAssociation]   Search3x3 row+1: |%s|%s|%s|\n",
+                    tagbuf[2], tagbuf[2] + 5, tagbuf[2] + 10);
+        }
+        else
+        {
+            LOG_RAW("[HistoricalAssociation]   Search3x3: skipped (A outside ROI >1 cell)\n");
+        }
+
+        std::string cand_str;
+        for (const auto& g : cands)
+        {
+            char tmp[128];
+            std::snprintf(tmp, sizeof(tmp),
+                          "Cluster=%d Center=(%.2f,%.2f) Dist=%.3f | ",
+                          g.id, g.cx, g.cy, g.dist);
+            cand_str += tmp;
+        }
+        if (cand_str.empty()) cand_str = "none";
+        LOG_RAW("[HistoricalAssociation]   Candidates: %s\n", cand_str.c_str());
+
+        if (matched >= 0)
+        {
+            LOG_RAW("[HistoricalAssociation]   MatchedCluster=%d Center=(%.2f,%.2f) Distance=%.3f inWindow=%d reason=%s\n",
+                    matched, mcx, mcy, mdist, (int)in_window, reason_str);
+        }
+        else
+        {
+            LOG_RAW("[HistoricalAssociation]   MatchedCluster=-1 reason=%s (Historical A exists, no current detection)\n",
+                    reason_str);
         }
     }
 
-    int overlap_total = 0;
-    for (int idx : hist_all)
-    {
-        if (current_cells.find(idx) != current_cells.end())
-        {
-            overlap_total++;
-        }
-    }
-    const int hist_only_total = static_cast<int>(hist_all.size()) - overlap_total;
-    const int fused_total = static_cast<int>(current_cells.size()) + hist_only_total;
-
-    LOG_RAW("[HistoricalFeedback] tracks=%zu historical_valid_tracks=%zu overlap_tracks=%d recovery_candidate_tracks=%d historical_only_cells=%d current_total_cells=%zu fused_total_cells=%d\n",
-            m_mapTracks.size(), out.size(), overlap_tracks, recovery_candidate_tracks,
-            hist_only_total, current_cells.size(), fused_total);
+    // 帧摘要
+    LOG_RAW("[HistoricalAssociation] frame summary: hist_tracks=%zu sameTrackIdMatches=%d geomMatches=%d noCurrentDetection=%d\n",
+            out.size(), same_id_match, geometric_match, no_detection_cnt);
 }
 
 

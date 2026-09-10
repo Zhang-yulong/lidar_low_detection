@@ -121,7 +121,8 @@ private:
     // 本帧投影到当前 Grid 的 Historical Feedback Region（仅供 Debug 可视化/日志）
     std::vector<HistoricalFeedbackRegion> m_historicalFeedback;
 
-    /// 将历史 Map Track 投影到当前雷达系并 rasterize 到当前 Grid，计算 overlap 统计并打印日志
+    /// 将历史 Map Track 投影到当前雷达系得预测位置 A → A 转 Base Cell → 3×3 邻居搜索
+    /// → 候选当前 Cluster → 关联（SAME_TRACK_ID / 几何门控）；打印 [HistoricalAssociation] 日志
     void ComputeHistoricalFeedback(
         const std::vector<GridCluster>& clusters,
         const LocalizationManager::Pose& pose,

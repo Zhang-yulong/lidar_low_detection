@@ -234,6 +234,13 @@ int CommInit(const SELF_DEBUG_CONFIG &config)
 		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
 		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
 	}
+	else if(config.pathTolidarTransformConfig == 13){
+		const char *PathToMainLidarConfig = "/home/zyl/echiev_low_lidar_detection/config/T05-lidar-hainan-new/rsairy_right_front/lidar.cfg";
+		const char *PathToCarConfig = "/home/zyl/echiev_low_lidar_detection/config/T05-lidar-hainan-new/lidar.cfg";
+		iRet_1 = readConfigFile(strToMainLidarConfig.get(), PathToMainLidarConfig);
+		iRet_2 = readConfigFile(strToCarConfig.get(), PathToCarConfig);
+	}
+
 	else{
 		LOG_RAW("**** 2 **** [Error]read 《debug_config.yaml》 中的 pathTolidarTransformConfig 参数错误 \n");
 		return -1;

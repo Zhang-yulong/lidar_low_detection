@@ -481,7 +481,7 @@ void SimpleTracker::removeLostTargets(){
 // 移除 lastSeen > 10 的目标（例如：连续10帧没看到就删掉）
 	auto it = std::remove_if(vtrackings.begin(), vtrackings.end(),
 		[](const TrackedObstacle& t) { 
-			return t.lastSeen > 5; 
+			return t.lastSeen > 10; 
 			// return t.lastSeen == 1; 
 		}
 	);

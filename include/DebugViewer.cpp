@@ -1700,6 +1700,24 @@ void DebugViewer::DrawHistoricalFeedbackOverlay(
         }
     };
 
+    // cell (row,col) → 像素 Rect（供 3×3 窗口描边；等价于 FillCell 的几何）
+    auto CellRectPx = [&](int r, int c) -> cv::Rect {
+        if (r < 0 || r >= rows || c < 0 || c >= cols) return cv::Rect();
+        const float invr = 1.0f / gridCfg.grid_resolution;
+        const float blind = gridCfg.car_half_x + gridCfg.body_filter_x_threshold;
+        const int   blind_cols = static_cast<int>(std::round(blind * invr));
+        const int   pb = blind_cols * kGridPixelScale;
+        const float cx = eff_x_min + (static_cast<float>(c) + 0.5f) * gridCfg.grid_resolution;
+        const float cy = gridCfg.roi_y_min + (static_cast<float>(r) + 0.5f) * gridCfg.grid_resolution;
+        const float px_f = pb + (cx - blind) * invr * kGridPixelScale + expand_img_w / 2.0f;
+        const float py_f = (rows - (cy - gridCfg.roi_y_min) * invr) * kGridPixelScale
+                           + expand_img_h / 2.0f;
+        cv::Rect rc(static_cast<int>(px_f) - kGridPixelScale / 2,
+                    static_cast<int>(py_f) - kGridPixelScale / 2,
+                    kGridPixelScale, kGridPixelScale);
+        return rc & cv::Rect(0, 0, img_w, img_h);
+    };
+
     // 收集当前 cluster cell 集合 + cell→cluster 映射
     std::unordered_set<int> current_cells;
     std::unordered_map<int, int> cell_to_cluster;
@@ -1786,6 +1804,49 @@ void DebugViewer::DrawHistoricalFeedbackOverlay(
                     cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 255, 255), 1);
     }
 
+    // ---- Phase 2/3：A / Base Cell / 3×3 Search Window / A→Matched 连线（主验证可视化）----
+    // 颜色约定：橙=Base Cell(A 所在)边框, 青=8 邻居 Cell 边框, 橙实心圆=A,
+    //           绿连线 = A → 关联 Cluster Center。
+    for (const auto& r : feedback)
+    {
+        if (!r.a_searchable) continue;
+
+        // 3×3 窗口内每个在-grid cell 描边
+        for (int dr = -1; dr <= 1; ++dr)
+        {
+            for (int dc = -1; dc <= 1; ++dc)
+            {
+                const int rr = r.base_row + dr;
+                const int cc = r.base_col + dc;
+                if (rr < 0 || rr >= rows || cc < 0 || cc >= cols) continue; // 边界合法性
+                cv::Rect rc = CellRectPx(rr, cc);
+                if (rc.width <= 0 || rc.height <= 0) continue;
+                if (rr == r.base_row && cc == r.base_col)
+                    cv::rectangle(image, rc, cv::Scalar(0, 165, 255), 2);   // 橙：Base Cell
+                else
+                    cv::rectangle(image, rc, cv::Scalar(255, 255, 0), 1);   // 青：邻居
+            }
+        }
+
+        // A 点（预测位置，橙色实心 + 白描边）
+        int axp = 0, ayp = 0;
+        WorldToPixel(r.projected_x, r.projected_y, axp, ayp, gridCfg);
+        cv::circle(image, cv::Point(axp, ayp), 3, cv::Scalar(0, 165, 255), -1);
+        cv::circle(image, cv::Point(axp, ayp), 5, cv::Scalar(255, 255, 255), 1);
+        cv::putText(image, "A", cv::Point(axp + 6, ayp - 6),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 255, 255), 1);
+
+        // A → 关联 Cluster Center 连线（绿）
+        if (r.association_cluster_id >= 0)
+        {
+            int mpx = 0, mpy = 0;
+            WorldToPixel(r.matched_center_x, r.matched_center_y, mpx, mpy, gridCfg);
+            cv::line(image, cv::Point(axp, ayp), cv::Point(mpx, mpy),
+                     cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
+            cv::circle(image, cv::Point(mpx, mpy), 3, cv::Scalar(0, 255, 0), -1);
+        }
+    }
+
     // 地图白线叠加（只绘制，不改变算法状态）
     DrawHdMapOverlay(image, mapPolygons, pose, gridCfg);
 
@@ -1794,10 +1855,21 @@ void DebugViewer::DrawHistoricalFeedbackOverlay(
 
     const size_t fused_cnt = current_cells.size() + hist_cells.size() - overlap_cnt;
 
-    char title[128];
+    // Phase2/3 关联统计（SAME_TRACK_ID / GEOMETRIC / NO_CURRENT_DETECTION）
+    int n_same = 0, n_geom = 0, n_none = 0;
+    for (const auto& r : feedback)
+    {
+        if (!r.a_searchable) continue;
+        if (r.association_reason == kHistMatchSameTrackId) n_same++;
+        else if (r.association_reason == kHistMatchGeometric) n_geom++;
+        else n_none++;
+    }
+
+    char title[256];
     snprintf(title, sizeof(title),
-             "HistoricalFeedback Cur=%zu Hist=%zu Overlap=%zu Fused=%zu",
-             current_cells.size(), hist_cells.size(), overlap_cnt, fused_cnt);
+             "HistoricalFeedback Cur=%zu Hist=%zu Overlap=%zu Fused=%zu | A-assoc same=%d geom=%d none=%d",
+             current_cells.size(), hist_cells.size(), overlap_cnt, fused_cnt,
+             n_same, n_geom, n_none);
     cv::putText(image, title, cv::Point(10, 20),
                 cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
 

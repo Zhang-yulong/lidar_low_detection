@@ -82,8 +82,8 @@ INCLUDES := \
     -I$(THIRDPARTY)/pcl/include/pcl-1.8 \
     -I$(THIRDPARTY)/vtk/include/vtk-6.3 \
     -I$(THIRDPARTY)/boost/include \
-    -I$(THIRDPARTY)/flann/include
-
+    -I$(THIRDPARTY)/flann/include \
+    -I$(THIRDPARTY)/proj4/include
 
 #----------------------------------------------------------------------------------
 # 6. 库文件链接配置 (-L -l)
@@ -100,6 +100,7 @@ LDFLAGS := \
     -L$(THIRDPARTY)/vtk/lib \
     -L$(THIRDPARTY)/boost/lib \
     -L$(THIRDPARTY)/flann/lib \
+    -L$(THIRDPARTY)/proj4/lib \
     -L$(ROOTFS_DIR)/usr/lib \
     -L$(ROOTFS_DIR)/usr/lib/aarch64-linux-gnu \
     -L$(ROOTFS_DIR)/lib
@@ -159,6 +160,7 @@ LIBS := \
     -lvtktiff-6.3                 -lvtkverdict-6.3           -lvtkViewsContext2D-6.3    -lvtkViewsCore-6.3                -lvtkViewsInfovis-6.3       -lvtkzlib-6.3 \
     -lpthread \
     -lflann_cpp -lflann \
+    -lproj\
     -lrt \
     -lz\
     -ldl \

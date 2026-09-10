@@ -7,20 +7,24 @@
  * @brief Phase 2/3 Quick Validation —— Historical Feedback 实验性数据结构与辅助函数
  *
  * 目的（Quick Validation，非正式 Phase 3）：
- *   验证 "上一帧 Historical Track → Map Frame → 当前 Radar Frame → Current Grid"
- *   这一基本闭环是否能为当前帧因 LiDAR 视角变化导致的漏检提供稳定的空间先验。
+ *   验证 "Historical Track → Map Anchor → 当前 Radar Frame A → A 所在 Cell +
+ *   8 邻居(3×3) → 当前 Cluster/Track 关联" 这一闭环是否可靠，
+ *   为当前帧因 LiDAR 视角变化导致的漏检提供稳定的空间先验。
  *
- * 本次明确不做：
+ * 本轮明确不做：
  *   - 不修改 BuildGrid
  *   - 不实现 Raw Point Image / 5cm Image / CSR / Raw Point minAreaRect
  *   - 不实现 Historical Image / 5-frame history / Historical Contour / Morphological Fusion
- *   - 不重写 Tracker、不修改最终 UDP 输出
+ *   - 不重写 Tracker、不修改最终 UDP 输出、不做 motion_state 完整分类
  *
- * 本次只做：
- *   - 复用已有 GridCluster / TrackedObstacle / Localization / CoordinateTransformer
- *   - 将历史 Track 锚定到地图系（外部侧表，不修改 TrackedObstacle）
- *   - 投影回当前雷达系并 rasterize 到当前 Grid → Historical Feedback Region
- *   - Current ∪ Historical → Fused Debug Region
+ * 本轮只做（Debug / Validation only）：
+ *   - 复用已有 GridCluster / TrackedObstacle / Localization / CoordinateTransformer / SimpleTracker
+ *   - 将历史 Track 锚定到地图系（外部侧表 MapAnchoredTrack，不修改 TrackedObstacle）
+ *   - 把 Map Anchor 投影回当前雷达系得到预测位置 A
+ *   - A → 当前 Grid Base Cell → 3×3 Neighbor Search → 候选当前 Cluster
+ *   - 关联：优先 SAME_TRACK_ID（当前 tracker 同 ID 且本帧匹配），否则几何距离（带门控）
+ *   - 记录关联结果 + DebugViewer / 日志可视化
+ *   - 上一阶段的 OBB rasterize / overlap / fused_cells 统计保留但降级为 secondary
  *
  * 坐标系约定（已从代码确认）：
  *   - Grid / GridCluster / TrackedObstacle.pos_* 均为【主雷达系】：
@@ -42,6 +46,23 @@ namespace Lidar_Low_Detection
 
 /// 历史 Track 需要达到的稳定年龄（连续匹配帧数），低于此值不产生 Historical Feedback
 constexpr int kMinTrackAgeForFeedback = 3;
+
+// ============================================================================
+// Phase 2/3（本轮）：Map Anchor → 当前 Radar A → 3×3 Grid 关联
+// ============================================================================
+
+/// 3×3 关联原因（HistoricalAssociation reason）
+enum HistoricalMatchReason
+{
+    kHistMatchNone        = -1,  ///< 未关联（当前无对应检测 / 该目标处于 miss / ROI 外）
+    kHistMatchSameTrackId = 0,   ///< 当前 tracker 存在同 ID Track 且本帧匹配成功（最可靠确认）
+    kHistMatchGeometric   = 1    ///< 当前 tracker 无同 ID 目标 → 3×3 窗口内最近候选（几何距离 + 门控）
+};
+
+/// 几何 fallback 门控：A → 候选 Cluster 中心的最大允许距离（米）。
+/// 只有在候选 Cluster 确实占据 3×3 窗口内 cell、且距离不超过该门控时才允许几何关联，
+/// 避免"无限制选取最近 Cluster"造成误关联。
+constexpr float kHistAssociationMaxDistM = 0.5f;
 
 /**
  * @brief 地图系锚定的历史 Track 状态（Quick Validation 侧表，不修改 TrackedObstacle）
@@ -79,14 +100,53 @@ struct HistoricalFeedbackRegion
     float  center_x = 0.0f, center_y = 0.0f; ///< 当前雷达系中心
     float  length   = 0.0f, width    = 0.0f; ///< length/width（雷达系）
     Point2D corners[4] = {};         ///< 当前雷达系 4 角点（OBB 区域）
-    std::vector<int> projected_cell_indices; ///< 当前 Grid 被覆盖的 cell（线性索引）
-    bool   valid = false;            ///< 是否投影成功且覆盖了至少 1 个 cell
+    std::vector<int> projected_cell_indices; ///< 当前 Grid 被 OBB 覆盖的 cell（线性索引, secondary）
+    bool   valid = false;            ///< A 投影是否存在（本帧该历史 Track 的反馈记录有效）
 
     // 与当前 Cluster 的重叠统计（Quick Validation 日志/可视化用）
     int current_cells     = 0;       ///< 匹配到的当前 Cluster cell 数
     int historical_cells  = 0;       ///< Historical 覆盖 cell 数
     int overlap_cells     = 0;       ///< 与当前 Cluster 重叠 cell 数
     int fused_cells       = 0;       ///< current ∪ historical cell 数
+
+    // ========================================================================
+    // Phase 2/3（本轮主验证指标）：Map Anchor → 当前 Radar A → 3×3 Grid 关联
+    // 上述 OBB rasterize / overlap / fused 统计保留，但已降级为 secondary。
+    // ========================================================================
+
+    // A：历史 Track 的地图锚点投影到【当前主雷达系】后的预测位置（x=前向, y=左向, m）
+    float  projected_x = 0.0f;
+    float  projected_y = 0.0f;
+
+    // A → 当前 Grid Base Cell。
+    //   严格 ROI 内：a_inside_grid = true；
+    //   距 ROI 边界 ≤1 cell（如刚超出盲区/前方 max_x）：夹取到最近边界 cell 仍做 3×3 搜索；
+    //   完全在 ROI 外（>1 cell）：a_searchable=false，不搜索（视作无当前检测）。
+    bool   a_inside_grid = false;
+    bool   a_searchable  = false;
+    int    base_row = -1;            ///< Base Cell 行（夹取后）
+    int    base_col = -1;            ///< Base Cell 列（夹取后）
+    int    base_linear_index = -1;   ///< Base Cell 线性索引 row*cols+col
+
+    /// 3×3 Search Window 中落在 Grid 范围内的 cell 线性索引（≤9，边界裁剪）
+    std::vector<int> search_window_indices;
+
+    /// 当前 Cluster Candidate：3×3 窗口内出现的当前 Cluster ID（去重、升序）
+    std::vector<int> candidate_cluster_ids;
+
+    // 关联结果（核心）
+    int    association_cluster_id = -1;      ///< 最终关联的当前 Cluster ID（-1=无）
+    int    association_reason     = kHistMatchNone;  ///< HistoricalMatchReason
+    bool   association_in_window  = false;   ///< 关联 Cluster 是否位于 3×3 窗口内（1001≠1002 也能关联）
+    float  association_distance   = -1.0f;   ///< A → 关联 Cluster 中心 欧氏距离(m)
+    float  matched_center_x = 0.0f;          ///< 关联 Cluster 中心（DebugViewer 画线 A→Center 用）
+    float  matched_center_y = 0.0f;
+    bool   no_current_detection = false;     ///< 当前帧该历史目标无对应检测（miss / 完全 ROI 外）
+
+    // 当前 tracker 中同 ID Track 的实时状态（-1 = 当前 tracker 已无该 ID）
+    int    live_track_age      = -1;         ///< live track.age
+    int    live_track_lastSeen = -1;         ///< live track.lastSeen（miss 帧计数）
+    bool   live_track_matched  = false;      ///< live track 本帧是否匹配成功(lastSeen==0)
 };
 
 // ============================================================================
