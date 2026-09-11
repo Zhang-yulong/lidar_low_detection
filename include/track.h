@@ -15,6 +15,7 @@
 
 #include "ulog_api.h"
 #include "Type.h"
+#include "track_motion_state.h"   // Phase 3-A: MotionState 枚举 + 阈值常量
 namespace Lidar_Low_Detection
 {
 extern int send_fd;
@@ -66,6 +67,24 @@ struct TrackedObstacle {
     float vx = 0.0f;
     float vy = 0.0f;
 
+    // ========================================================================
+    // Phase 3-A: Motion State（地图系运动状态，判断“历史信息是否可信”）
+    //   ⚠ 注意：以下字段必须在【拷贝构造 / 拷贝赋值】中同步拷贝（见下方手写实现）
+    //   vx/vy 保持【主雷达系】语义不变，地图系速度单独用 map_vx/map_vy。
+    // ========================================================================
+    MotionState motion_state = MotionState::UNKNOWN; ///< UNKNOWN / STATIC / MOVING
+    bool  has_map_pos        = false;    ///< 是否已有有效 matched map position
+    float map_x = 0.0f;                  ///< 最近一次有效 map position X (地图系 ENU)
+    float map_y = 0.0f;                  ///< 最近一次有效 map position Y (地图系 ENU)
+    float map_vx = 0.0f;                 ///< 地图系速度 X (m/s, EMA)
+    float map_vy = 0.0f;                 ///< 地图系速度 Y (m/s, EMA)
+    float motion_step = 0.0f;            ///< 最近一次地图系帧间位移 (m)
+    float motion_net  = 0.0f;            ///< 观察窗口内净位移 (m)
+    float motion_dir_deg = 0.0f;         ///< 最近一次位移方向 (deg)
+    int   motion_static_run = 0;         ///< 连续静止证据计数
+    int   motion_moving_run = 0;         ///< 连续运动证据计数
+    std::vector<Point2D> recent_map_positions; ///< 最近 kMotionHistoryCap 个有效 matched map position
+
     // 新增：指向卡尔曼滤波器的智能指针
     std::unique_ptr<KalmanFilter2D> kf;
 
@@ -96,6 +115,20 @@ struct TrackedObstacle {
 
         vx = other.vx;
         vy = other.vy;
+
+        // Phase 3-A: Motion State 字段必须同步拷贝
+        motion_state      = other.motion_state;
+        has_map_pos       = other.has_map_pos;
+        map_x             = other.map_x;
+        map_y             = other.map_y;
+        map_vx            = other.map_vx;
+        map_vy            = other.map_vy;
+        motion_step       = other.motion_step;
+        motion_net        = other.motion_net;
+        motion_dir_deg    = other.motion_dir_deg;
+        motion_static_run = other.motion_static_run;
+        motion_moving_run = other.motion_moving_run;
+        recent_map_positions = other.recent_map_positions;
 
         // 2. 深拷贝 unique_ptr 成员
         if (other.kf) {
@@ -133,6 +166,20 @@ struct TrackedObstacle {
 
         vx = other.vx;
         vy = other.vy;
+
+        // Phase 3-A: Motion State 字段必须同步拷贝
+        motion_state      = other.motion_state;
+        has_map_pos       = other.has_map_pos;
+        map_x             = other.map_x;
+        map_y             = other.map_y;
+        map_vx            = other.map_vx;
+        map_vy            = other.map_vy;
+        motion_step       = other.motion_step;
+        motion_net        = other.motion_net;
+        motion_dir_deg    = other.motion_dir_deg;
+        motion_static_run = other.motion_static_run;
+        motion_moving_run = other.motion_moving_run;
+        recent_map_positions = other.recent_map_positions;
 
         // 3. 深拷贝 unique_ptr 成员
         if (other.kf) {

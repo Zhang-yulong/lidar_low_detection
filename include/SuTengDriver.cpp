@@ -1072,6 +1072,12 @@ void SutengDriver::ProcessPcapCloud(){
             }
         }
 
+        // ── Phase 3-A: Motion State（map frame, UNKNOWN/STATIC/MOVING）──
+        // 在 m_tracker.update() 之后：维护 map position history + 运动证据 + 状态机，
+        // 结果写回 m_tracker.vtrackings（供 DebugViewer / 日志读取）。
+        // 不修改 tracker 匹配/删除，不修改 Phase 2 关联。
+        UpdateTrackMotionStates(loc_pose, have_pose, rec_timestamp_ms);
+
         // ── Historical Feedback（Phase 2/3 Quick Validation，实验性）────────────────
         // 只产生 Debug 证据（投影到当前 Grid 的空间先验 + Fused 统计），
         // 不修改 detections / tracker 输入 / 最终 UDP 输出。
@@ -1255,6 +1261,148 @@ void SutengDriver::UpdateMapAnchors(const LocalizationManager::Pose& pose, bool 
                            return alive_ids.find(a.id) == alive_ids.end();
                        }),
         m_mapTracks.end());
+}
+
+// ============================================================================
+// Phase 3-A: Motion State (map frame, UNKNOWN / STATIC / MOVING)
+// ============================================================================
+// 在 m_tracker.update() 之后调用：把本帧【匹配成功】的 Track 位置经 vehicleToMap 转入地图系，
+// 维护最近 map position history，计算运动证据（step / net / 方向一致性 / 速度），
+// 用带迟滞的状态机更新 motion_state，并写回 m_tracker.vtrackings（供可视化/日志读取）。
+//
+// 原则：
+//   - 只在 matched(lastSeen==0) 且 pose.valid 时产生新的 map 观测；miss 帧不追加、不伪造位置。
+//   - age / lastSeen / vx / vy 语义不变；map 速度写入独立的 map_vx/map_vy。
+//   - 不改 SimpleTracker::update() 匹配/删除，不改 Phase 2 关联。
+void SutengDriver::UpdateTrackMotionStates(const LocalizationManager::Pose& pose,
+                                           bool pose_valid,
+                                           unsigned long long rec_timestamp_ms)
+{
+    constexpr float kPi = 3.14159265358979323846f;
+
+    // dt 与 SimpleTracker::update() 同源（g_previousTimestamp 在帧末才更新）
+    const unsigned long long prev_ts = g_previousTimestamp.load(std::memory_order_relaxed);
+    const double dt = (rec_timestamp_ms > prev_ts)
+                      ? static_cast<double>(rec_timestamp_ms - prev_ts) / 1000.0
+                      : 0.0;
+
+    VehiclePose vpose;
+    vpose.x = pose.x;
+    vpose.y = pose.y;
+    vpose.heading_deg = pose.heading_deg;
+
+    for (auto& t : m_tracker.vtrackings)
+    {
+        bool new_obs = false;
+
+        // ---- 只有 matched + pose valid 才产生新的 map 观测 ----
+        if (t.lastSeen == 0 && pose_valid)
+        {
+            double mx = 0.0, my = 0.0;
+            CoordinateTransformer::vehicleToMap(t.pos_x, t.pos_y, vpose, mx, my);
+            new_obs = true;
+
+            // 1) 帧间位移 / 地图系速度（EMA）
+            if (t.has_map_pos)
+            {
+                const float dx = static_cast<float>(mx) - t.map_x;
+                const float dy = static_cast<float>(my) - t.map_y;
+                t.motion_step    = std::sqrt(dx * dx + dy * dy);
+                t.motion_dir_deg = std::atan2(dy, dx) * 180.0f / kPi;
+                if (dt > 1e-3)
+                {
+                    const float nvx = dx / static_cast<float>(dt);
+                    const float nvy = dy / static_cast<float>(dt);
+                    t.map_vx = kMotionVEmaAlpha * nvx + (1.0f - kMotionVEmaAlpha) * t.map_vx;
+                    t.map_vy = kMotionVEmaAlpha * nvy + (1.0f - kMotionVEmaAlpha) * t.map_vy;
+                }
+            }
+            else
+            {
+                t.motion_step = 0.0f;
+                t.motion_dir_deg = 0.0f;
+            }
+
+            // 2) 更新当前 map position + history（漏检帧不追加）
+            t.map_x = static_cast<float>(mx);
+            t.map_y = static_cast<float>(my);
+            t.has_map_pos = true;
+            t.recent_map_positions.push_back(Point2D{ static_cast<float>(mx), static_cast<float>(my) });
+            if (static_cast<int>(t.recent_map_positions.size()) > kMotionHistoryCap)
+            {
+                t.recent_map_positions.erase(t.recent_map_positions.begin());
+            }
+
+            // 3) 窗口证据：净位移 + 方向一致性
+            const int n = static_cast<int>(t.recent_map_positions.size());
+            float net = 0.0f;
+            bool  dir_ok = false;
+            if (n >= 2)
+            {
+                int win = kMotionMoveWin;
+                if (win > n - 1) win = n - 1;
+                const Point2D& lastp  = t.recent_map_positions[n - 1];
+                const Point2D& firstp = t.recent_map_positions[n - 1 - win];
+                const float ndx = lastp.x - firstp.x;
+                const float ndy = lastp.y - firstp.y;
+                net = std::sqrt(ndx * ndx + ndy * ndy);
+                const float net_dir = std::atan2(ndy, ndx) * 180.0f / kPi;
+
+                // 需要至少 kMotionMMove 步，且每一步方向与窗口净方向夹角 <= DIR_TOL
+                if (n >= kMotionMMove + 1)
+                {
+                    dir_ok = true;
+                    for (int i = n - kMotionMMove; i < n; ++i)
+                    {
+                        const float sdx = t.recent_map_positions[i].x - t.recent_map_positions[i - 1].x;
+                        const float sdy = t.recent_map_positions[i].y - t.recent_map_positions[i - 1].y;
+                        const float step_len = std::sqrt(sdx * sdx + sdy * sdy);
+                        if (step_len < 1e-6f) { dir_ok = false; break; }
+                        float d = std::fabs(std::atan2(sdy, sdx) * 180.0f / kPi - net_dir);
+                        if (d > 180.0f) d = 360.0f - d;
+                        if (d > kMotionDirTolDeg) { dir_ok = false; break; }
+                    }
+                }
+            }
+            t.motion_net = net;
+
+            // 4) 计数器（死区内两者都清零 → 状态保持，形成迟滞）
+            const bool moving_ok = (t.motion_step >= kMotionMoveStepMin) && dir_ok &&
+                                   (net >= kMotionMoveNetMin);
+            const bool static_ok = (t.motion_step <= kMotionStaticStepMax);
+
+            t.motion_moving_run = moving_ok ? (t.motion_moving_run + 1) : 0;
+            t.motion_static_run = static_ok ? (t.motion_static_run + 1) : 0;
+
+            // 5) 状态迁移（迟滞：进入快、退出慢；单帧不足以切换）
+            switch (t.motion_state)
+            {
+                case MotionState::UNKNOWN:
+                    if (t.motion_moving_run >= kMotionMMove)
+                        t.motion_state = MotionState::MOVING;
+                    else if (t.motion_static_run >= kMotionUnknownToStatic)
+                        t.motion_state = MotionState::STATIC;
+                    break;
+                case MotionState::STATIC:
+                    if (t.motion_moving_run >= kMotionMMove)
+                        t.motion_state = MotionState::MOVING;
+                    break;
+                case MotionState::MOVING:
+                    if (t.motion_static_run >= kMotionMovingToStatic)
+                        t.motion_state = MotionState::STATIC;
+                    break;
+            }
+        }
+        // 漏检帧：不追加 history、不伪造位置、不更新证据/状态（miss ≠ static evidence）
+
+        // ---- 日志：matched / miss 都输出，便于判断“为什么”是该状态 ----
+        LOG_RAW("[MotionState] Track=%d age=%d lastSeen=%d state=%s map=(%.2f,%.2f) step=%.3f net=%.3f dir=%.1f v=(%.2f,%.2f) obs=%d hist=%zu srun=%d mrun=%d\n",
+                t.id, t.age, t.lastSeen, MotionStateName(t.motion_state),
+                t.map_x, t.map_y, t.motion_step, t.motion_net, t.motion_dir_deg,
+                t.map_vx, t.map_vy, (int)new_obs,
+                t.recent_map_positions.size(),
+                t.motion_static_run, t.motion_moving_run);
+    }
 }
 
 // 本帧：把历史 Map Track（地图锚点）投影到当前雷达系得到预测位置 A
@@ -1546,35 +1694,37 @@ void SutengDriver::ComputeHistoricalFeedback(
                 r.projected_x, r.projected_y, (int)r.a_inside_grid,
                 r.base_row, r.base_col, r.search_window_indices.size());
 
-        // 3×3 布局：'-'=窗口内无 cluster, 'X'=越界(未搜索), 数字=该 cell 所属当前 cluster
+        // 3×3 布局：'-'=窗口内无 cluster, 'X'=越界(未搜索), C{id}=该 cell 所属当前 cluster
+        // 修复：每格使用独立缓冲，避免相邻格写满 5 字符后覆盖前格 null 终止符，
+        //       导致 %s 把整行 15 字符重复打印（现象：同一行 C8 被打印 3 遍）。
         if (searchable)
         {
-            char tagbuf[3][16] = {{0}};
+            char celltag[3][3][8];
             for (int dr = -1; dr <= 1; ++dr)
             {
                 for (int dc = -1; dc <= 1; ++dc)
                 {
                     const int rr = br + dr;
                     const int cc = bc + dc;
-                    char* seg = tagbuf[dr + 1] + (dc + 1) * 5;
+                    char* seg = celltag[dr + 1][dc + 1];
                     if (rr < 0 || rr >= rows || cc < 0 || cc >= cols)
                     {
-                        std::snprintf(seg, 6, "  X  ");
+                        std::snprintf(seg, 8, "  X ");
                         continue;
                     }
                     auto it = cell_to_cluster.find(rr * cols + cc);
                     if (it != cell_to_cluster.end())
-                        std::snprintf(seg, 6, " C%-2d ", it->second);
+                        std::snprintf(seg, 8, "C%-2d", it->second);
                     else
-                        std::snprintf(seg, 6, "  -  ");
+                        std::snprintf(seg, 8, "  - ");
                 }
             }
-            LOG_RAW("[HistoricalAssociation]   Search3x3 row-1: |%s|%s|%s|\n",
-                    tagbuf[0], tagbuf[0] + 5, tagbuf[0] + 10);
-            LOG_RAW("[HistoricalAssociation]   Search3x3 row  : |%s|%s|%s|\n",
-                    tagbuf[1], tagbuf[1] + 5, tagbuf[1] + 10);
-            LOG_RAW("[HistoricalAssociation]   Search3x3 row+1: |%s|%s|%s|\n",
-                    tagbuf[2], tagbuf[2] + 5, tagbuf[2] + 10);
+            LOG_RAW("[HistoricalAssociation]   Search3x3 row-1: [%s][%s][%s]\n",
+                    celltag[0][0], celltag[0][1], celltag[0][2]);
+            LOG_RAW("[HistoricalAssociation]   Search3x3 row  : [%s][%s][%s]\n",
+                    celltag[1][0], celltag[1][1], celltag[1][2]);
+            LOG_RAW("[HistoricalAssociation]   Search3x3 row+1: [%s][%s][%s]\n",
+                    celltag[2][0], celltag[2][1], celltag[2][2]);
         }
         else
         {

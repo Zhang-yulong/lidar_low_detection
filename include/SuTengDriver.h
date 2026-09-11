@@ -132,6 +132,14 @@ private:
     /// 每帧结束后用当前 Track + 当前位姿维护地图锚点侧表（miss 时冻结）
     void UpdateMapAnchors(const LocalizationManager::Pose& pose, bool pose_valid);
 
+    /// Phase 3-A：在 m_tracker.update() 之后，用地图系位置历史维护每个 Track 的
+    /// Motion State（UNKNOWN/STATIC/MOVING）、map position、map 速度/方向。
+    /// 只读 pose + track 位置，写回 m_tracker.vtrackings 的 Phase 3-A 新增字段；
+    /// 不修改 tracker 匹配/删除，不修改 Phase 2 关联。
+    void UpdateTrackMotionStates(const LocalizationManager::Pose& pose,
+                                 bool pose_valid,
+                                 unsigned long long rec_timestamp_ms);
+
     VisFrameBuffer m_visBuffer;    // 帧缓冲：工作线程 → 主线程
 
     /* ---- 可视化成员已迁移至 main.cpp（注释保留） ----

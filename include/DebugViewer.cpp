@@ -1614,14 +1614,29 @@ void DebugViewer::DrawMapAndAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& gr
                     cv::Point(cx + 6, cy - 6),
                     cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 255, 255), 1);
 
-        // 速度向量 (青色箭头, 与像素/米比例一致)
-        float v_norm = std::sqrt(t.vx * t.vx + t.vy * t.vy);
-        if (v_norm > 1e-3f)
+        // Phase 3-A: Motion State + 地图系速度（小标签，不改动原可视化结构）
         {
-            int ex, ey;
-            WorldToPixel(t.pos_x + t.vx, t.pos_y + t.vy, ex, ey, gridCfg);
-            cv::arrowedLine(image, cv::Point(cx, cy), cv::Point(ex, ey),
-                            cv::Scalar(220, 220, 0), 2, 8, 0.2);
+            const char* st = MotionStateName(t.motion_state);
+            cv::Scalar st_color = (t.motion_state == MotionState::MOVING) ? cv::Scalar(0, 0, 255)
+                                : (t.motion_state == MotionState::STATIC) ? cv::Scalar(0, 255, 0)
+                                                                          : cv::Scalar(170, 170, 170);
+            char stbuf[96];
+            snprintf(stbuf, sizeof(stbuf), "%s v=(%.2f,%.2f)m/s", st, t.map_vx, t.map_vy);
+            cv::putText(image, stbuf, cv::Point(cx + 6, cy + 10),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.35, st_color, 1);
+        }
+
+        //运动的时候给箭头
+        if(t.motion_state == MotionState::MOVING){
+        // 速度向量 (青色箭头, 与像素/米比例一致)
+            float v_norm = std::sqrt(t.vx * t.vx + t.vy * t.vy);
+            if (v_norm > 1e-3f)
+            {
+                int ex, ey;
+                WorldToPixel(t.pos_x + t.vx, t.pos_y + t.vy, ex, ey, gridCfg);
+                cv::arrowedLine(image, cv::Point(cx, cy), cv::Point(ex, ey),
+                                cv::Scalar(220, 220, 0), 2, 8, 0.2);
+            }
         }
     }
 
