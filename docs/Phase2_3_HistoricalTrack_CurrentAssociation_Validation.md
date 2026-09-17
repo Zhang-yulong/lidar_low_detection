@@ -335,3 +335,103 @@ Phase 3 可直接消费：
 - ✅ 只做：历史 Track→Map Anchor→A→A±1 Grid→当前 Track/Cluster 关联验证（Debug only）。
 - ❌ 未做：Historical Contour Fusion、5cm Raw Point Image/CSR、Raw Point→minAreaRect、修改 `m_tracker.update()` 核心行为、修改 UDP 输出、引入 UNKNOWN/STATIC/MOVING 完整分类。
 - ✅ `historical_cells / overlap_cells / fused_cells` 已降级为 secondary（标题仍显示，但不作为成功标准）。
+
+---
+
+## 21. 为什么新障碍物前几帧 `hist_tracks=0`？—— `m_mapTracks` 生效条件与 271~278 逐帧复算
+
+> 现象：障碍物刚出现的多帧 `hist_tracks=0`，但 `m_tracker.update()` 明确已经跟踪到（如 `Track id: 10011`）。
+> 结论：**这不是 tracker 没检测到，也不是关联失败，而是 Historical Association 的“年龄门槛”尚未满足（`kMinTrackAgeForFeedback=3`），叠加“帧末才写锚点”的时序。**
+
+### 21.1 核心原因
+
+`ComputeHistoricalFeedback()` 只处理同时满足以下条件的锚点（`m_mapTracks` 条目）：
+
+```cpp
+anchor.has_map == true
+anchor.age    >= kMinTrackAgeForFeedback   // = 3
+```
+
+而 `anchor.age` 的赋值是**“最后一次匹配成功那一帧的 `track.age`”**（见 `UpdateMapAnchors()` 的 `if (t.lastSeen == 0)` 分支）。
+`track.age` 从 0 起步，且**只在匹配成功的帧 +1**（`SimpleTracker::update()` 内 `vtrackings[i].age++`）。
+
+因此一个新 Track 在它生命早期的若干“匹配成功帧”里 `age = 0, 1, 2, 3 …`；**只要 `age < 3`，该锚点就被 `continue` 跳过**，于是这些帧的 `hist_tracks=0`。
+
+### 21.2 `m_mapTracks` 有值（且能被输出）的完整条件链
+
+| # | 条件 | 代码位置 | 说明 |
+|---|---|---|---|
+| 1 | `UpdateMapAnchors()` 执行时 `pose_valid==true` | `UpdateMapAnchors()` 开头 `if (!pose_valid) return;` | **定位无效时整个函数直接返回，连锚点都不会创建** → `m_mapTracks` 为空。这是“很多帧 hist_tracks=0”的第一嫌疑项，日志会出现 `[HistoricalAssociation] localization invalid -> disabled`。 |
+| 2 | Track 存在于 `m_tracker.vtrackings` | `for (const auto& t : m_tracker.vtrackings)` | 即该目标必须被检测并匹配成功过一次（`update()` 才会建档）。 |
+| 3 | 锚点条目被创建，且 `has_map=true` | 遍历中 `push_back(MapAnchoredTrack())`；`has_map=true` 仅在 `t.lastSeen==0` 分支 | 匹配帧才会写入地图锚点；纯 miss 不写中心。 |
+| 4 | **输出门槛** `anchor.age >= 3` | `ComputeHistoricalFeedback()` 中 `if (anchor.age < kMinTrackAgeForFeedback) continue;` | 未达标的锚点完全不参与统计，故 `hist_tracks` 不含它。 |
+
+补充两个“时序/生命周期”事实（容易误判）：
+- **帧内顺序**：`ComputeHistoricalFeedback()` 在 `UpdateMapAnchors()` **之前** 执行 → 帧 N 用的是**帧 N-1 帧末**写入的 `anchor.age`（差一帧），这正是 §三 要求“用上一帧已有历史信息”。
+- **锚点随 tracker 删除而删除**：`removeLostTargets()` 当前为 `lastSeen > 5`，Track 被删则锚点同步删除；目标若以**新 ID** 重现，`age` 从 0 重新累计 → 又会经历一段 `hist_tracks=0`。这就是“不止一个障碍物会连续多帧 `hist_tracks=0`”的另一来源。
+
+### 21.3 你的 271~278 逐帧复算（与日志逐项吻合）
+
+| 帧 | 检测 / Tracker | `track.age`(帧末) | `lastSeen` | 帧末 `anchor.age` | 本帧 `ComputeHistoricalFeedback` | 说明 |
+|---|---|---|---|---|---|---|
+| 271 | C9 → 新建 10011 | 0 | 0 | 0 | `hist_tracks=0` | 锚点刚建立，age=0 < 3 |
+| 272 | C10 匹配 | 1 | 0 | 1 | `hist_tracks=0` | age=1 < 3 |
+| 273 | 漏检 | 1 | 1 | 1（冻结） | `hist_tracks=0` | **miss 不会让 age 增长** |
+| 274 | 漏检 | 1 | 2 | 1（冻结） | `hist_tracks=0` | 同上 |
+| 275 | C5 匹配 | 2 | 0 | 2 | `hist_tracks=0` | age=2 < 3 |
+| 276 | 漏检 | 2 | 1 | 2（冻结） | `hist_tracks=0` | 同上 |
+| 277 | C6 匹配 | 3 | 0 | 3 | `hist_tracks=0` | **帧末**才把 anchor.age 写成 3；本帧计算仍用上一帧的 2 |
+| 278 | C8 匹配 | 4 | 0 | 4 | **`hist_tracks=1`**，`Track=10011 age=3 lastSeen=0 live_age=4 …` | 本帧用帧末 277 的 `anchor.age=3` → **首次通过门槛** ✅ |
+
+关键自洽点：
+- 你 278 行的 `age=3 live_age=4` **完全正确**：
+  - `age=3` = 锚点快照（来自 277 帧末，`track.age` 首次到 3）；
+  - `live_age=4` = 本帧 `m_tracker.update()` 之后当前 track.age（278 又匹配了一次）。
+- 273/274/276 的漏检**只增大 `lastSeen`、不增大 `age`**，所以从“日历帧”看要等到 278（第 8 帧），而从“匹配帧”看只需要累计 3 次成功匹配（271→272→275→277 四次匹配把 age 推到 3）。
+
+### 21.4 为什么“多个障碍物都会连续多帧 `hist_tracks=0`”
+
+1. 每个新 Track **各自**从 `age=0` 起步，都要独立跨过 `age>=3` 门槛；
+2. 目标若间歇性漏检，`age` 只在匹配帧 +1 → 达标所需**日历帧数更多**；
+3. `frame summary` 里的 `hist_tracks = out.size()` = **通过门槛的锚点数**，所以任一帧只要所有存活 Track 的 `anchor.age` 都 <3，就打印 `hist_tracks=0`（即使 tracker 里有一堆 `Track id`）；
+4. 还有两种会**直接**导致 `hist_tracks=0`：
+   - `pose_valid==false`（定位无效）→ 函数提前 return，日志为 `localization invalid -> disabled`；
+   - 目标被 `removeLostTargets()`（`lastSeen>5`）删除、随后以新 ID 重现 → 锚点被删后再从 age=0 重新累计。
+
+### 21.5 如何快速区分“年龄门槛”与“定位无效”
+
+查看同一帧附近的日志：
+
+```
+[LocDiag] cloud_ts_ms=... loc_valid=1 loc_age_ms=... loc_n=...
+```
+- 若 `loc_valid=1` 且**没有** `[HistoricalAssociation] localization invalid -> disabled` → `hist_tracks=0` 属于**正常的年龄未达标**；
+- 若 `loc_valid=0` 或出现 `localization invalid` → 是定位门控，需先修定位/配置（`Localization.enable`、`mapFilterModel`、离线固定位姿等）。
+
+### 21.6 对本次验证的影响（重要）
+
+- **新障碍物刚出现的前几帧 `hist_tracks=0` 属于预期行为，不是关联失败。** 评估“A→3×3→Cluster”关联能力时，应只看 `anchor.age>=3` 之后的帧（例如本例从 278 起）。
+- 若希望新目标更早获得历史先验，可临时下调 `kMinTrackAgeForFeedback`（例如 1 或 2）做实验；但这会增加“未稳定目标”被纳入历史先验的风险，**本轮按约束不改生产 Tracker，也不改默认门槛**。
+
+---
+
+## 22. 顺带修复：`Search3x3` 日志重复打印
+
+**现象**（你的日志）：
+
+```
+Search3x3 row  : | C8   C8   C8  | C8   C8  | C8  |
+```
+
+同一行内容被打印了 3 遍。
+
+**原因**：原实现把 3 段 5 字符写入 `tagbuf[row] + (dc+1)*5`，再用 `%s` 打印 `tagbuf[row] / +5 / +10`。但 `snprintf(seg, 6, ...)` 写满 5 字符后其 `\0`（位于 offset 5）会被**下一段的首字符覆盖**，导致 `tagbuf[row]` 实际是一条 15 字符的无终止字符串 → 输出变成“整行 15 字符 + 后 10 字符 + 后 5 字符”。
+
+**修复**：改用 `char celltag[3][3][8]`，**每格独立缓冲**，按 `[%s][%s][%s]` 输出。修复后单行样例：
+
+```
+[HistoricalAssociation]   Search3x3 row  : [C8 ][C8 ][C8 ]
+[HistoricalAssociation]   Search3x3 row+1: [C8 ][  -][  -]
+```
+
+（`C{id}` 表示该 cell 属于当前 Cluster；`  - ` 表示窗口内该 cell 无 cluster；`  X ` 表示越界未搜索。）

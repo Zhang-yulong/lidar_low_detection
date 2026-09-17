@@ -12,6 +12,7 @@
 #include "hdmap_manager.h"
 #include "hdmap_filter.h"
 #include "historical_feedback.h"
+#include "historical_geometry.h"   // Phase 3-B: STATIC Historical Geometry
 #include <thread>
 #include <atomic>
 #include "ReadYamlFile.h"
@@ -79,6 +80,8 @@ public:
 
 private:
 
+    int test_Frame_count =0;
+
     const SELF_DEBUG_CONFIG *m_ST_Config;
     const STR_ALL_LIDAR_CONFIG_INFO *m_ST_AllLidarTransfromInfo;
 
@@ -140,6 +143,25 @@ private:
                                  bool pose_valid,
                                  unsigned long long rec_timestamp_ms);
 
+    // ---- Phase 3-B: STATIC Historical Geometry ----
+    // 对 STATIC + 已关联的 historical track，用历史 cell footprint 安全补充当前 Cluster。
+    // 复用 Phase 2 的 m_historicalFeedback；必须在 UpdateMapAnchors() 之后调用，
+    // 以保证 Phase 2 锚点始终基于原始检测几何（不被 fused 几何污染）。
+    std::vector<HistoricalGeometryResult> m_historicalGeometry;
+    void ApplyHistoricalGeometry(const std::vector<GridCluster>& clusters);
+    // ---- Phase 3-B (v2): STATIC Track OBB Geometry Refinement -------------
+    // 只对 STATIC + 本帧匹配成功 + pose 有效 的 Track：
+    //   yaw    = 当前 PCA yaw（方向可观测且与历史连续）
+    //            / 历史 yaw（方向不可观测，或可观测但与历史明显冲突）
+    //            / RAW（不可观测且无历史 yaw，不凭空创造方向）
+    //   L/W    = 用最终 yaw 在当前帧 cells 上重新投影（不使用历史 L/W）
+    //   center = 当前 RAW center（不做任何位置平滑）
+    // 结果只写入 outTracks（RAW 快照副本），【不回写 m_tracker】；
+    // 必须在 UpdateMapAnchors()（基于 RAW 几何）之后调用，避免形成反馈回路。
+    void RefineStaticObbGeometry(const std::vector<GridCluster>& clusters,
+                                 const LocalizationManager::Pose& pose,
+                                 bool pose_valid,
+                                 std::vector<TrackedObstacle>& outTracks);
     VisFrameBuffer m_visBuffer;    // 帧缓冲：工作线程 → 主线程
 
     /* ---- 可视化成员已迁移至 main.cpp（注释保留） ----

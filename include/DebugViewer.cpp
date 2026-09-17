@@ -18,6 +18,22 @@
 // #include "opencv2/opencv.hpp"
 namespace Lidar_Low_Detection
 {
+// ============================================================================
+// 内部辅助：地图系 yaw → 雷达(车体)系 yaw —— 两点法（输入/输出均为弧度）
+// 与 SuTengDriver.cpp 中 MapYawRadToRadarYawRad 同源：对同一方向的两个点分别做
+// mapToVehicle 后取差，自动包含 CoordinateTransformer 内部的 heading + 网格补偿角。
+// 用途：miss 帧可视化时把 TrackedObstacle::map_yaw_deg 转回本帧雷达系 yaw。
+// ============================================================================
+static float MapYawRadToRadarYawRadLocal(float yaw_map_rad, const VehiclePose& vpose)
+{
+    double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+    CoordinateTransformer::mapToVehicle(0.0, 0.0, vpose, x0, y0);
+    CoordinateTransformer::mapToVehicle(static_cast<double>(std::cos(yaw_map_rad)),
+                                        static_cast<double>(std::sin(yaw_map_rad)),
+                                        vpose, x1, y1);
+    return static_cast<float>(std::atan2(y1 - y0, x1 - x0));
+}
+
 // 说明：融合 pose.heading 是 IMU 航向，与点云/Grid 主雷达系前向相差补偿角
 //       （= 90° + fLidar2Vehicle_Heading，由 lidar.cfg 计算，见 docs/HDMap可视化.md 第五节）。
 //       该补偿已在 CoordinateTransformer 内部统一应用（main.cpp 启动时设置一次），
@@ -1358,7 +1374,7 @@ void DebugViewer::DrawClusterOverlay(const pcl::PointCloud<pcl::PointXYZI>& grou
 }
 
 // ============================================================================
-// 9. DrawOverlay(TrackedObstacle) —— 跟踪结果点云叠加图（第九层）
+// 画高精地图
 // ============================================================================
 
 void DebugViewer::DrawHdMapOverlay(cv::Mat& image,
@@ -1545,6 +1561,12 @@ void DebugViewer::DrawMapAndAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& gr
     const auto& viewCfg = m_DV_config.TrackerOverlay;
     if (!viewCfg.enable) return;
 
+    VehiclePose vpose;
+    vpose.x = pose.x;
+    vpose.y = pose.y;
+    // 注：主雷达系↔融合IMU系 航向补偿已在 CoordinateTransformer::mapToVehicle 内部应用
+    vpose.heading_deg = pose.heading_deg;
+
     // 与 1~6 层一致: 计算图像几何(含车前盲区偏移)与窗口宽高
     int rows, cols, px_blind_offset, img_w, img_h;
     ComputeGridImageGeometry(gridCfg, rows, cols, px_blind_offset, img_w, img_h);
@@ -1591,19 +1613,115 @@ void DebugViewer::DrawMapAndAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& gr
     {
         const auto& t = trackers[i];
 
-        // corners[4] 多边形 (白色)
-        std::vector<cv::Point> pts(4);
-        for (int j = 0; j < 4; ++j)
-        {
-            int px, py;
-            WorldToPixel(t.corners[j].x, t.corners[j].y, px, py, gridCfg);
-            pts[j] = cv::Point(px, py);
+        // ------------------------------------------------------------------
+        // 本图是【雷达系/车体系】。
+        //   - 匹配成功(matched)的 Track: pos_*/corners 就是本帧雷达系数据，直接可用；
+        //   - 本帧 miss 的 Track: SimpleTracker::update() 里没有位置更新，
+        //     pos_x/pos_y 与 corners 都停留在【上一次匹配帧】的雷达系，
+        //     直接画就会出现"障碍物钉在原地不动"的假象。
+        // 因此 miss 时：中心用地图系历史位置 (map_x,map_y) 换算到本帧车体系，
+        //             OBB 角点按 length/width/yaw 围绕新中心重建。
+        // ------------------------------------------------------------------
+        const bool need_map_rebuild = (!t.current_exist) && pose.valid && t.has_map_pos;
+
+        //本质上是因为这个图像是车体坐标系，而不是地图坐标系的
+        double pos_x = t.pos_x;
+        double pos_y = t.pos_y; 
+
+        if(need_map_rebuild){
+
+            CoordinateTransformer::mapToVehicle(static_cast<double>(t.map_x),
+                                               static_cast<double>(t.map_y),
+                                               vpose,
+                                               pos_x, pos_y);
+
         }
-        cv::polylines(image, pts, true, cv::Scalar(255, 255, 255), 2);
+
+
+        // corners[4] 多边形: 匹配成功 → 白色; miss → 青色(粗线)
+        std::vector<cv::Point> pts(4);
+        if (!need_map_rebuild)
+        {
+            // 情况 A: 角点已是本帧雷达系，直接投影
+            for (int j = 0; j < 4; ++j)
+            {
+                int px, py;
+                WorldToPixel(t.corners[j].x, t.corners[j].y, px, py, gridCfg);
+                pts[j] = cv::Point(px, py);
+            }
+        }
+        else
+        {
+            // 情况 B: 用旧角点反算 yaw（corner0→corner1 即 OBB 长轴方向，见 BuildObbCorners），
+            //         尺寸优先取 OBB 语义字段 depth(长轴)/width(短轴)，退化时用旧角点反算，
+            //         再围绕"地图系换算得到的本帧中心"重建 4 角点。
+            const float dx_c = t.corners[1].x - t.corners[0].x;
+            const float dy_c = t.corners[1].y - t.corners[0].y;
+
+            // yaw 来源优先级：
+            //   1) t.has_map_yaw —— matched 时存下的【地图系】长轴朝向，用当前 pose 转回
+            //      雷达系，自车转向时框方向依然正确（消除"已知残余误差"）；
+            //   2) 退化 —— 旧角点反算的【上一次匹配帧雷达系】yaw（等效假设自车朝向未变）。
+            constexpr float kDeg2RadF = 3.14159265358979323846f / 180.0f;
+            float yaw = std::atan2(dy_c, dx_c);
+            if (t.has_map_yaw)
+            {
+                yaw = MapYawRadToRadarYawRadLocal(t.map_yaw_deg * kDeg2RadF, vpose);
+            }
+
+            float len = t.depth;
+            float wid = t.width;
+            if (len <= 1e-3f)
+            {
+                len = std::sqrt(dx_c * dx_c + dy_c * dy_c);
+            }
+            if (wid <= 1e-3f)
+            {
+                const float dx_w = t.corners[3].x - t.corners[0].x;
+                const float dy_w = t.corners[3].y - t.corners[0].y;
+                wid = std::sqrt(dx_w * dx_w + dy_w * dy_w);
+            }
+
+            // 退化保护: 保证框在图上始终可见（顺序与 BuildObbCorners 一致: 左下→右下→右上→左上）
+            const float kMinBoxSize = 0.05f;  // 5cm
+            len = std::max(len, kMinBoxSize);
+            wid = std::max(wid, kMinBoxSize);
+
+            const float c  = std::cos(yaw);
+            const float s  = std::sin(yaw);
+            const float hl = len * 0.5f;
+            const float hw = wid * 0.5f;
+            const float fx = static_cast<float>(pos_x);
+            const float fy = static_cast<float>(pos_y);
+
+            const float rebuilt[4][2] = {
+                { fx - c * hl + s * hw, fy - s * hl - c * hw },  // 左下
+                { fx + c * hl + s * hw, fy + s * hl - c * hw },  // 右下
+                { fx + c * hl - s * hw, fy + s * hl + c * hw },  // 右上
+                { fx - c * hl - s * hw, fy - s * hl + c * hw },  // 左上
+            };
+            for (int j = 0; j < 4; ++j)
+            {
+                int px, py;
+                WorldToPixel(rebuilt[j][0], rebuilt[j][1], px, py, gridCfg);
+                pts[j] = cv::Point(px, py);
+            }
+
+            LOG_RAW("[TrackOverlayMiss] id=%d lastSeen=%d map=(%.2f,%.2f) veh=(%.2f,%.2f) L=%.2f W=%.2f yaw_src=%s yaw=%.1fdeg\n",
+                    t.id, t.lastSeen, t.map_x, t.map_y, fx, fy, len, wid,
+                    t.has_map_yaw ? "map" : "stale_radar", yaw / kDeg2RadF);
+        }
+
+        if(!need_map_rebuild)
+            cv::polylines(image, pts, true, cv::Scalar(255, 255, 255), 2);
+        else
+            cv::polylines(image, pts, true, cv::Scalar(220, 220, 0), 5);
+
 
         // 中心点 (黄色)
         int cx, cy;
-        WorldToPixel(t.pos_x, t.pos_y, cx, cy, gridCfg);
+        // WorldToPixel(t.pos_x, t.pos_y, cx, cy, gridCfg);
+        WorldToPixel(static_cast<float>(pos_x), static_cast<float>(pos_y), cx, cy, gridCfg);
         cv::circle(image, cv::Point(cx, cy), 4, cv::Scalar(0, 220, 220), -1);
 
         // ID 标注: 优先用跟踪器稳定ID, 否则用簇ID/索引
@@ -1626,25 +1744,31 @@ void DebugViewer::DrawMapAndAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& gr
                         cv::FONT_HERSHEY_SIMPLEX, 0.35, st_color, 1);
         }
 
-        //运动的时候给箭头
-        if(t.motion_state == MotionState::MOVING){
+        //运动和未知的时候给箭头
+        if(t.motion_state == MotionState::MOVING || t.motion_state == MotionState::UNKNOWN){
         // 速度向量 (青色箭头, 与像素/米比例一致)
             float v_norm = std::sqrt(t.vx * t.vx + t.vy * t.vy);
             if (v_norm > 1e-3f)
             {
                 int ex, ey;
-                WorldToPixel(t.pos_x + t.vx, t.pos_y + t.vy, ex, ey, gridCfg);
+                // 起点必须是【本帧实际绘制用的中心】(pos_x,pos_y)，
+                // 否则 miss 帧会用上一次匹配帧的旧中心，箭头起点/方向与画出的框不自洽。
+                WorldToPixel(static_cast<float>(pos_x) + t.vx,
+                             static_cast<float>(pos_y) + t.vy, ex, ey, gridCfg);
                 cv::arrowedLine(image, cv::Point(cx, cy), cv::Point(ex, ey),
                                 cv::Scalar(220, 220, 0), 2, 8, 0.2);
             }
         }
     }
 
-    // 地图白线叠加（只绘制，不改变算法状态）
-    DrawHdMapOverlay(image, mapPolygons, pose, gridCfg);
+    if (pose.valid && !mapPolygons.empty())
+    {
+        // 地图白线叠加（只绘制，不改变算法状态）
+        DrawHdMapOverlay(image, mapPolygons, pose, gridCfg);
 
-    // // 【临时调试】HDMap 叠加校准（1m 参考框 + 最近边界点，排查完成后删除）
-    DrawHdMapOverlayCalib(image, mapPolygons, pose, gridCfg);
+        // // 【临时调试】HDMap 叠加校准（1m 参考框 + 最近边界点，排查完成后删除）
+        DrawHdMapOverlayCalib(image, mapPolygons, pose, gridCfg);
+    }
 
     char title[128];
     snprintf(title, sizeof(title), "TrackerOverlay G:%zu Obs:%zu Tracks:%zu",

@@ -1,4 +1,5 @@
 #include "SuTengDriver.h"
+#include "static_obb_refinement.h"   // Phase 3-B: STATIC OBB geometry refinement
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -924,6 +925,7 @@ void SutengDriver::ProcessPcapCloud(){
         if (m_debugViewer)
         {
             m_debugViewer->NewFrame();
+            test_Frame_count++;
         }
 
 
@@ -943,7 +945,7 @@ void SutengDriver::ProcessPcapCloud(){
         unsigned long long rec_timestamp_ms = static_cast<unsigned long long>(msg->timestamp * 1000.0);
 
         
-        LOG_RAW("----------------------\n");
+        LOG_RAW("--------------------------------------------\n");
         LOG_RAW("[%s][%lld]Loop Start\n", titleTime_string.c_str(), titleTime_ms);
 
         if(m_ST_Config->pcapRunningModel){
@@ -1058,7 +1060,6 @@ void SutengDriver::ProcessPcapCloud(){
             m_tracker.update(detections, rec_timestamp_ms);
             // m_tracker.update_V2(detections, rec_timestamp_ms);
 
-            // std::cout <<" ----[Tracker] stable IDs (from 9999)----"<<std::endl;
             for (const auto& track : m_tracker.vtrackings)
             {
                 // std::cout << "Track id: " << track.id << ": "
@@ -1068,7 +1069,7 @@ void SutengDriver::ProcessPcapCloud(){
                 //           << "age=" << track.age
                 //           << std::endl;
                 
-                LOG_RAW("Track id: %d: Center(%.2f, %.2f, %.2f), age=%d\n", track.id, track.pos_x, track.pos_y, track.pos_z, track.age);
+                // LOG_RAW("Track id: %d: Center(%.2f, %.2f, %.2f), age=%d\n", track.id, track.pos_x, track.pos_y, track.pos_z, track.age);
             }
         }
 
@@ -1077,24 +1078,43 @@ void SutengDriver::ProcessPcapCloud(){
         // 结果写回 m_tracker.vtrackings（供 DebugViewer / 日志读取）。
         // 不修改 tracker 匹配/删除，不修改 Phase 2 关联。
         UpdateTrackMotionStates(loc_pose, have_pose, rec_timestamp_ms);
+        LOG_RAW("\n");
+        
+        // ── Map Anchor 维护（Phase 2 侧表；必须使用 RAW 几何）────────────────────
+        // 时序要求：锚点必须在 geometry refinement 之前刷新，使 map anchor / 历史关联始终基于
+        // RAW 检测几何，不形成 "Refined → Anchor → Association → Refined" 的反馈回路。
+        // UpdateMapAnchors() 只维护 m_mapTracks（map 位置/角点，取 RAW vtrackings），
+        // 不读不写 tracker 几何状态；其中的 Phase 3-B yaw 记忆字段由 RefineStaticObbGeometry 维护。
+        UpdateMapAnchors(loc_pose, have_pose);
 
-        // ── Historical Feedback（Phase 2/3 Quick Validation，实验性）────────────────
+        // ── Phase 3-B (v2): STATIC Track OBB Geometry Refinement ─────────────────
+        // 只读 m_tracker.vtrackings（RAW）；结果写入 outTracks（RAW 快照副本），供 Debug/可视化/UDP 使用。
+        // ⚠ 不写回 m_tracker：Tracker State 永远保持 RAW（association / 速度 / age / lastSeen / motion_state 不受影响）。
+        std::vector<TrackedObstacle> outTracks;
+        RefineStaticObbGeometry(outputClusters, loc_pose, have_pose, outTracks);
+
+        // ── Historical Feedback（Phase 2/3 Quick Validation，实验性）──────────────────
         // 只产生 Debug 证据（投影到当前 Grid 的空间先验 + Fused 统计），
         // 不修改 detections / tracker 输入 / 最终 UDP 输出。
-        {
-            m_historicalFeedback.clear();
-            ComputeHistoricalFeedback(outputClusters, loc_pose, have_pose, m_historicalFeedback);
+        // {
+        //     m_historicalFeedback.clear();
+        //     ComputeHistoricalFeedback(outputClusters, loc_pose, have_pose, m_historicalFeedback);
 
-            if (m_debugViewer)
-            {
-                m_debugViewer->DrawHistoricalFeedbackOverlay(
-                    outputClusters, m_historicalFeedback,
-                    m_pElevationMapGroundFilter->GetConfig(),hdmap_polygons, loc_pose);
-            }
+        //     if (m_debugViewer)
+        //     {
+        //         m_debugViewer->DrawHistoricalFeedbackOverlay(
+        //             outputClusters, m_historicalFeedback,
+        //             m_pElevationMapGroundFilter->GetConfig(),hdmap_polygons, loc_pose);
+        //     }
 
-            // 每帧结束：用当前 Track + 当前位姿维护地图锚点侧表（下一帧反馈使用）
-            UpdateMapAnchors(loc_pose, have_pose);
-        }
+        //     // 每帧结束：用当前 Track + 当前位姿维护地图锚点侧表（下一帧反馈使用）
+        //     UpdateMapAnchors(loc_pose, have_pose);
+        // }
+
+        // ── Phase 3-B: STATIC Historical Geometry（cell 补充；fused OBB 默认关闭）──
+        // 复用 Phase 2 的 m_historicalFeedback（association + projected cells）。
+        // ⚠ 必须在 UpdateMapAnchors() 之后：确保 Phase 2 锚点基于原始检测几何，不被 fused 几何污染。
+        // ApplyHistoricalGeometry(outputClusters);
 
         // ── Debug: 第九层 跟踪结果点云叠加图 (TrackedObstacle 版本) ──
         // 需要 DebugViewer 配置 TrackerOverlay.enable=1 才会绘制
@@ -1113,20 +1133,20 @@ void SutengDriver::ProcessPcapCloud(){
             //     }
             // }
 
-            if (have_pose && loc_pose.valid && !hdmap_polygons.empty())
-            {
+            // if (have_pose && loc_pose.valid && !hdmap_polygons.empty())
+            // {
                 m_debugViewer->DrawMapAndAllOverlay(*pGroundCloud, *pObstacleCloud,
-                                           m_tracker.vtrackings,
+                                           outTracks,   // Phase 3-B: RAW + refined 几何（仅输出层）
                                            m_pElevationMapGroundFilter->GetConfig(),
                                            hdmap_polygons,
                                            loc_pose);
-            }
-            else
-            {
-                m_debugViewer->DrawTrackOverlay(*pGroundCloud, *pObstacleCloud,
-                                           m_tracker.vtrackings,
-                                           m_pElevationMapGroundFilter->GetConfig());
-            }
+            // }
+            // else
+            // {
+            //     m_debugViewer->DrawTrackOverlay(*pGroundCloud, *pObstacleCloud,
+            //                                m_tracker.vtrackings,
+            //                                m_pElevationMapGroundFilter->GetConfig());
+            // }
         }
 
         auto t_end_5_ = std::chrono::steady_clock::now();
@@ -1136,7 +1156,7 @@ void SutengDriver::ProcessPcapCloud(){
         if(m_ST_Config->pcapRunningModel){
 
             // SavePcd(pInputCloud);
-            SavePcd(pFilteredPointCloud);
+            // SavePcd(pFilteredPointCloud);
             // SavePcd(pObstacleCloud);
             // SavePcd(p_comm_no_Ground);
 
@@ -1151,8 +1171,8 @@ void SutengDriver::ProcessPcapCloud(){
             SpinGroundViewerOnce();  // 非阻塞，给 UI 刷新机会
             ---- */
 
-            // ============ 帧缓冲：发布数据给主线程渲染 ============
-            m_visBuffer.Publish(pGroundCloud, pObstacleCloud, m_tracker.vtrackings);
+            // ============ 帧缓冲：发布数据给主线程渲染（Phase 3-B: 使用 refined 输出副本）============
+            m_visBuffer.Publish(pGroundCloud, pObstacleCloud, outTracks);
         }
         auto t_end_6_ = std::chrono::steady_clock::now();
         auto duration_6 = std::chrono::duration_cast<std::chrono::milliseconds>(t_end_6_ - t_end_5_);
@@ -1161,7 +1181,8 @@ void SutengDriver::ProcessPcapCloud(){
         if(m_ST_Config->onlineModel){
             newS2AviodObject outputObject;
             memset(&outputObject, 0, sizeof(outputObject));
-            m_pElevationMapGroundFilter->ConvertTrackToS2ObstacleBox(m_tracker.vtrackings, rec_timestamp_ms, outputObject);
+            // Phase 3-B: 使用 refined 输出副本（outTracks）；Tracker 内部仍为 RAW。
+            m_pElevationMapGroundFilter->ConvertTrackToS2ObstacleBox(outTracks, rec_timestamp_ms, outputObject);
 
             
             int send_ret = sendUdpMsg(send_fd, (unsigned char*)&outputObject, sizeof(outputObject), ip, port);
@@ -1274,6 +1295,11 @@ void SutengDriver::UpdateMapAnchors(const LocalizationManager::Pose& pose, bool 
 //   - 只在 matched(lastSeen==0) 且 pose.valid 时产生新的 map 观测；miss 帧不追加、不伪造位置。
 //   - age / lastSeen / vx / vy 语义不变；map 速度写入独立的 map_vx/map_vy。
 //   - 不改 SimpleTracker::update() 匹配/删除，不改 Phase 2 关联。
+
+// 前置声明：定义在本文件 Phase 3-B 段（RefineStaticObbGeometry 之前），
+// 供 UpdateTrackMotionStates 记录 map_yaw_deg 复用（同一 TU 内的 static 函数）。
+static float RadarYawRadToMapYawRad(float yaw_rad, const VehiclePose& vpose);
+
 void SutengDriver::UpdateTrackMotionStates(const LocalizationManager::Pose& pose,
                                            bool pose_valid,
                                            unsigned long long rec_timestamp_ms)
@@ -1327,6 +1353,29 @@ void SutengDriver::UpdateTrackMotionStates(const LocalizationManager::Pose& pose
             t.map_x = static_cast<float>(mx);
             t.map_y = static_cast<float>(my);
             t.has_map_pos = true;
+
+            // 2.1) 记录 OBB 长轴朝向（地图系）：
+            //      长轴方向由雷达系角点 corner0→corner1 得到（与 BuildObbCorners 约定一致），
+            //      再用两点法转成地图系 yaw，落盘为 deg。
+            //      用途：miss 帧可视化时 雷达系 yaw = f(map_yaw_deg, 当前 pose)，
+            //            自车转向时重建的框方向依然正确（消除“已知残余误差”）。
+            {
+                const float dx_c = t.corners[1].x - t.corners[0].x;
+                const float dy_c = t.corners[1].y - t.corners[0].y;
+                if (dx_c * dx_c + dy_c * dy_c > 1e-6f)
+                {
+                    const float yaw_radar_rad = std::atan2(dy_c, dx_c);
+                    const float yaw_map_rad   = RadarYawRadToMapYawRad(yaw_radar_rad, vpose);
+                    t.map_yaw_deg = yaw_map_rad * 180.0f / kPi;
+                    t.has_map_yaw = true;
+                }
+                else
+                {
+                    // 角点退化（尺寸≈0）：不伪造方向，可视化侧回退旧雷达系 yaw
+                    t.has_map_yaw = false;
+                }
+            }
+
             t.recent_map_positions.push_back(Point2D{ static_cast<float>(mx), static_cast<float>(my) });
             if (static_cast<int>(t.recent_map_positions.size()) > kMotionHistoryCap)
             {
@@ -1396,13 +1445,226 @@ void SutengDriver::UpdateTrackMotionStates(const LocalizationManager::Pose& pose
         // 漏检帧：不追加 history、不伪造位置、不更新证据/状态（miss ≠ static evidence）
 
         // ---- 日志：matched / miss 都输出，便于判断“为什么”是该状态 ----
-        LOG_RAW("[MotionState] Track=%d age=%d lastSeen=%d state=%s map=(%.2f,%.2f) step=%.3f net=%.3f dir=%.1f v=(%.2f,%.2f) obs=%d hist=%zu srun=%d mrun=%d\n",
+        LOG_RAW("[MotionState] Track=%d age=%d lastSeen=%d state=%s Center(%.2f,%.2f,%.2f) map=(%.2f,%.2f) step=%.3f net=%.3f dir=%.1f v=(%.2f,%.2f) obs=%d hist=%zu srun=%d mrun=%d\n",
                 t.id, t.age, t.lastSeen, MotionStateName(t.motion_state),
+                t.pos_x, t.pos_y, t.pos_z,
                 t.map_x, t.map_y, t.motion_step, t.motion_net, t.motion_dir_deg,
                 t.map_vx, t.map_vy, (int)new_obs,
                 t.recent_map_positions.size(),
                 t.motion_static_run, t.motion_moving_run);
     }
+}
+
+// ============================================================================
+// Phase 3-B (v2): STATIC Track OBB Geometry Refinement
+// ============================================================================
+// 设计/阈值/决策表见 include/static_obb_refinement.h。
+//
+// 决策（只对 motion_state == STATIC + lastSeen == 0 + pose 有效的 Track）：
+//   yaw    = PCA（当前 cells 的 PCA 主方向可观测，且与历史 yaw 连续）
+//          | HISTORY（PCA 不可观测，或可观测但与历史明显冲突 → 保守）
+//          | RAW（不可观测且无历史 yaw，不凭空创造方向）
+//   L/W    = 用最终 yaw 在当前帧 cells 上重新投影（不使用历史 L/W）
+//   center = 当前 RAW center（不做任何位置平滑）
+//
+// 隔离（架构硬约束）：
+//   - 只读 m_tracker.vtrackings（RAW）；refined 几何只写入 outTracks（调用方持有的副本）
+//   - 不修改 association / vx,vy / age / lastSeen / motion_state / 删除策略
+//   - 历史 yaw 记忆保存在 m_mapTracks（MapAnchoredTrack::static_yaw_map_rad，地图系，弧度），
+//     只保存【被接受】的稳定 yaw；UpdateMapAnchors() 不修改该字段（锚点始终基于 RAW 几何）
+
+// ---- Phase 3-B 局部工具：雷达系 yaw ↔ 地图系 yaw（无向长轴）----
+// 用"两点法"：对同一方向上的两个点分别做坐标变换后取差，
+// 自动包含 CoordinateTransformer 内部的 heading + gridHeadingOffsetDeg，避免手推符号出错。
+static float RadarYawRadToMapYawRad(float yaw_rad, const VehiclePose& vpose)
+{
+    double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+    CoordinateTransformer::vehicleToMap(0.0, 0.0, vpose, x0, y0);
+    CoordinateTransformer::vehicleToMap(static_cast<double>(std::cos(yaw_rad)),
+                                        static_cast<double>(std::sin(yaw_rad)), vpose, x1, y1);
+    return NormalizeYaw180(static_cast<float>(std::atan2(y1 - y0, x1 - x0)));
+}
+
+static float MapYawRadToRadarYawRad(float yaw_map_rad, const VehiclePose& vpose)
+{
+    double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+    CoordinateTransformer::mapToVehicle(0.0, 0.0, vpose, x0, y0);
+    CoordinateTransformer::mapToVehicle(static_cast<double>(std::cos(yaw_map_rad)),
+                                        static_cast<double>(std::sin(yaw_map_rad)), vpose, x1, y1);
+    return NormalizeYaw180(static_cast<float>(std::atan2(y1 - y0, x1 - x0)));
+}
+
+void SutengDriver::RefineStaticObbGeometry(const std::vector<GridCluster>& clusters,
+                                           const LocalizationManager::Pose& pose,
+                                           bool pose_valid,
+                                           std::vector<TrackedObstacle>& outTracks)
+{
+    // ── 输出默认 = RAW 快照（无论是否 refinement，Debug/UDP 都消费 outTracks）──
+    outTracks = m_tracker.vtrackings;
+
+    if (!kObbRefineEnable) return;
+
+    const ElevationGridConfig& cfg = m_pElevationMapGroundFilter->GetConfig();
+    const int   cols  = m_pElevationMapGroundFilter->GetGridCols();
+    const float eff_x = m_pElevationMapGroundFilter->GetEffectiveRoiXMin();
+    const float res   = cfg.grid_resolution;
+    if (res <= 0.0f || cols <= 0) return;
+
+    // 本帧 cluster id → GridCluster（cluster.id 为帧内唯一编号）
+    std::unordered_map<int, const GridCluster*> cluster_by_id;
+    cluster_by_id.reserve(clusters.size());
+    for (const auto& cl : clusters)
+    {
+        cluster_by_id[cl.id] = &cl;
+    }
+
+    VehiclePose vpose;
+    vpose.x = pose.x;
+    vpose.y = pose.y;
+    vpose.heading_deg = pose.heading_deg;
+
+    int n_static = 0, n_refined = 0, n_pca = 0, n_hist = 0;
+    int n_not_static = 0, n_no_match = 0, n_no_cluster = 0, n_no_obb = 0;
+    int n_no_pose = 0, n_no_yaw = 0, n_axis_mismatch = 0;
+
+    std::vector<Point2D> centers;
+    centers.reserve(16);
+
+    for (size_t i = 0; i < m_tracker.vtrackings.size(); ++i)
+    {
+        const TrackedObstacle& t = m_tracker.vtrackings[i];   // RAW Track（只读）
+
+        // 历史 yaw 记忆（先查找，便于在 MOVING 时清理陈旧记忆）
+        MapAnchoredTrack* anchor = nullptr;
+        for (auto& a : m_mapTracks)
+        {
+            if (a.id == t.id) { anchor = &a; break; }
+        }
+
+        // ---- 只处理 STATIC；UNKNOWN / MOVING 一律 RAW ----
+        if (t.motion_state != MotionState::STATIC)
+        {
+            n_not_static++;
+            // MOVING：目标姿态是时变量，此前积累的 “STATIC 稳定 yaw” 不再代表当前姿态 → 清除，
+            // 避免 MOVING → STATIC 后误用陈旧历史方向；UNKNOWN 不动（保持“单帧不可靠不失效”语义）。
+            if (t.motion_state == MotionState::MOVING && anchor != nullptr)
+            {
+                anchor->has_static_yaw     = false;
+                anchor->static_yaw_map_rad = 0.0f;
+            }
+            continue;
+        }
+        n_static++;
+
+        // ---- 必须本帧匹配到检测（STATIC + miss 的预测属 Phase 3-C，本阶段不做）----
+        if (t.lastSeen != 0)
+        {
+            n_no_match++;
+            LOG_RAW("[GeomRefine] Track=%d frame=%d state=STATIC skip=NO_MATCH lastSeen=%d\n", t.id, test_Frame_count, t.lastSeen);
+            continue;
+        }
+
+        // ---- 本帧匹配到的 Cluster（cell 几何来源）----
+        auto it_cl = cluster_by_id.find(t.cluster_id);
+        if (it_cl == cluster_by_id.end())
+        {
+            n_no_cluster++;
+            LOG_RAW("[GeomRefine] Track=%d frame=%d state=STATIC skip=NO_CLUSTER cluster_id=%d\n",
+                    t.id, test_Frame_count, t.cluster_id);
+            continue;
+        }
+        const GridCluster& cl = *it_cl->second;
+        const int n_cells = static_cast<int>(cl.cell_indices.size());
+
+        if (!cl.has_obb)
+        {
+            n_no_obb++;
+            LOG_RAW("[GeomRefine] Track=%d frame=%d state=STATIC skip=NO_OBB cells=%d\n", t.id, test_Frame_count, n_cells);
+            continue;
+        }
+
+        // ---- pose：仅用于 map↔radar 的 yaw 投影（不引入新的定位逻辑）----
+        if (!pose_valid)
+        {
+            n_no_pose++;
+            LOG_RAW("[GeomRefine] Track=%d frame=%d state=STATIC skip=NO_POSE (yaw prior 无法投影)\n", t.id, test_Frame_count);
+            continue;
+        }
+
+        // ---- 历史 yaw（此前积累的、被接受的稳定 yaw；先读后写，避免被本帧 PCA 覆盖）----
+        const bool  has_hist = (anchor != nullptr) && anchor->has_static_yaw;
+        const float hist_yaw = has_hist ? MapYawRadToRadarYawRad(anchor->static_yaw_map_rad, vpose)
+                                        : 0.0f;
+
+        // ---- 决策：PCA / HISTORY / RAW ----
+        StaticObbDecision dec = DecideStaticObbYaw(cl.obb_angle,
+                                                   cl.obb_lambda_max,
+                                                   cl.obb_lambda_min,
+                                                   n_cells,
+                                                   has_hist,
+                                                   hist_yaw);
+
+        if (!dec.refined)
+        {
+            n_no_yaw++;
+            LOG_RAW("[GeomRefine] Track=%d frame=%d state=STATIC cells=%d lambdaMax=%.6f lambdaMin=%.6f "
+                    "eigenRatio=%.3f observable=0 skip=NO_USEFUL_YAW (无历史 yaw，不凭空创造方向)\n",
+                    t.id, test_Frame_count, n_cells, cl.obb_lambda_max, cl.obb_lambda_min, dec.eigen_ratio);
+            continue;
+        }
+
+        // ---- 用 final yaw 在当前帧 cells 上重新投影得到 L/W（不使用历史 L/W）----
+        centers.clear();
+        for (int idx : cl.cell_indices)
+        {
+            float cx = 0.0f, cy = 0.0f;
+            HistCellCenter(idx, cols, eff_x, cfg.roi_y_min, res, cx, cy);
+            centers.push_back(Point2D{ cx, cy });
+        }
+
+        float L = 0.0f, W = 0.0f;
+        ComputeYawAlignedExtents(centers, dec.yaw, L, W);
+        const bool axis_mismatch = (L < W);   // historical yaw 与当前 cells 长轴不一致时的诊断
+        if (axis_mismatch) n_axis_mismatch++;
+
+        // ---- center = 当前 RAW center；据此重建 corners（历史 corners 一律不用）----
+        Point2D corners[4];
+        BuildObbCorners(t.pos_x, t.pos_y, dec.yaw, L, W, corners);
+
+        outTracks[i].depth = L;
+        outTracks[i].width = W;
+        for (int c = 0; c < 4; ++c) outTracks[i].corners[c] = corners[c];
+        // outTracks[i].pos_x / pos_y / pos_z / height 保持 RAW，不修改
+
+        // ---- 历史 yaw 更新：仅当本次采用了可靠的当前 PCA 方向 ----
+        if (dec.update_history && anchor != nullptr)
+        {
+            anchor->static_yaw_map_rad = RadarYawRadToMapYawRad(dec.yaw, vpose);
+            anchor->has_static_yaw = true;
+        }
+
+        n_refined++;
+        if (dec.yaw_source == ObbYawSource::PCA) n_pca++; else n_hist++;
+
+        if (kObbRefineVerbose)
+        {
+            LOG_RAW("[GeomRefine] Track=%d frame=%d state=STATIC cells=%d lambdaMax=%.6f lambdaMin=%.6f "
+                    "eigenRatio=%.3f pcaYaw=%.1f histYaw=%.1f yawDelta180=%.1f observable=%d "
+                    "yawSource=%s finalYaw=%.1f rawL=%.2f rawW=%.2f refinedL=%.2f refinedW=%.2f "
+                    "axisMismatch=%d center=(%.2f,%.2f)\n", 
+                    t.id, test_Frame_count, n_cells, cl.obb_lambda_max, cl.obb_lambda_min, dec.eigen_ratio,
+                    ObbRadToDeg(dec.pca_yaw), has_hist ? ObbRadToDeg(dec.hist_yaw) : -999.0f,
+                    ObbRadToDeg(dec.yaw_delta), static_cast<int>(dec.observable),
+                    ObbYawSourceName(dec.yaw_source), ObbRadToDeg(dec.yaw),
+                    t.depth, t.width, L, W, static_cast<int>(axis_mismatch), t.pos_x, t.pos_y);
+        }
+    }
+
+    LOG_RAW("[GeomRefineSummary] tracks=%zu static=%d refined=%d yawPca=%d yawHistory=%d raw=%d "
+            "notStatic=%d noMatch=%d noCluster=%d noObb=%d noPose=%d noUsefulYaw=%d axisMismatch=%d\n",
+            m_tracker.vtrackings.size(), n_static, n_refined, n_pca, n_hist,
+            (n_static - n_refined), n_not_static, n_no_match, n_no_cluster, n_no_obb,
+            n_no_pose, n_no_yaw, n_axis_mismatch);
 }
 
 // 本帧：把历史 Map Track（地图锚点）投影到当前雷达系得到预测位置 A
@@ -1758,6 +2020,55 @@ void SutengDriver::ComputeHistoricalFeedback(
     // 帧摘要
     LOG_RAW("[HistoricalAssociation] frame summary: hist_tracks=%zu sameTrackIdMatches=%d geomMatches=%d noCurrentDetection=%d\n",
             out.size(), same_id_match, geometric_match, no_detection_cnt);
+}
+
+// ============================================================================
+// Phase 3-B: STATIC Historical Geometry
+// ============================================================================
+// 复用 Phase 2 的 m_historicalFeedback（association + projected historical cells），
+// 对 STATIC + 已关联的 Track 做 cell 补充（见 include/historical_geometry.h）。
+// 仅在 kEnableHistoricalFusedOBB=true 且存在 accepted supplement 时写回 vtrackings 几何。
+void SutengDriver::ApplyHistoricalGeometry(const std::vector<GridCluster>& clusters)
+{
+    m_historicalGeometry.clear();
+
+    FuseHistoricalGeometry(clusters, m_historicalFeedback, m_tracker.vtrackings,
+                           m_pElevationMapGroundFilter->GetConfig(),
+                           m_pElevationMapGroundFilter->GetGridRows(),
+                           m_pElevationMapGroundFilter->GetGridCols(),
+                           m_pElevationMapGroundFilter->GetEffectiveRoiXMin(),
+                           m_historicalGeometry);
+
+    for (const auto& g : m_historicalGeometry)
+    {
+        const char* st = MotionStateName(static_cast<MotionState>(g.motion_state));
+        const char* ar = (g.association_reason == kHistMatchSameTrackId) ? "SAME_TRACK_ID"
+                       : (g.association_reason == kHistMatchGeometric)   ? "GEOMETRIC"
+                                                                        : "NONE";
+        if (!g.fused)
+        {
+            LOG_RAW("[HistoricalGeometry] Track=%d state=%s cluster=%d assoc=%s cur=%d hist=%d missing=%d accepted=0 skip=%s\n",
+                    g.track_id, st, g.cluster_id, ar,
+                    g.current_cells, g.historical_cells, g.missing_cells,
+                    (g.skip_reason != nullptr && g.skip_reason[0] != '\0') ? g.skip_reason
+                                                                           : "NO_SUPPLEMENT");
+            continue;
+        }
+
+        LOG_RAW("[HistoricalGeometry] Track=%d state=%s cluster=%d assoc=%s cur=%d hist=%d missing=%d accepted=%d rej(oog=%d other=%d dist=%d conn=%d area=%d) area_ratio=%.2f max_supp=%d fusion=ACCEPT obb=%d\n",
+                g.track_id, st, g.cluster_id, ar,
+                g.current_cells, g.historical_cells, g.missing_cells, g.accepted_cells,
+                g.rejected_out_of_grid, g.rejected_other_cluster, g.rejected_distance,
+                g.rejected_connectivity, g.rejected_area,
+                g.area_ratio, g.max_supplement, (int)g.obb_updated);
+
+        if (g.obb_updated)
+        {
+            LOG_RAW("[HistoricalGeometry]   fusedOBB center=(%.2f,%.2f) L=%.2f W=%.2f yaw=%.1f conf=%.2f\n",
+                    g.center_x, g.center_y, g.length, g.width,
+                    g.yaw_deg, g.orientation_confidence);
+        }
+    }
 }
 
 

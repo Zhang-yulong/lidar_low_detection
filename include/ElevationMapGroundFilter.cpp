@@ -2448,6 +2448,12 @@ void ElevationMapGroundFilter::ComputeClusterOBB(GridCluster& cluster) const
         (lambda_max - lambda_min) /
         std::max(lambda_max + lambda_min, 1e-6f);
 
+    // Phase 3-B: 保存 PCA 特征值/置信度（供 STATIC OBB 方向可观测性判断使用）。
+    // 仅新增“保存”，不改变本函数任何 OBB 计算与输出。
+    cluster.obb_lambda_max = lambda_max;
+    cluster.obb_lambda_min = lambda_min;
+    cluster.obb_orientation_confidence = orientation_confidence;
+
     float raw_angle =
         std::atan2(axis_primary.y(), axis_primary.x());
 

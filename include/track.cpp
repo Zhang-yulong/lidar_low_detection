@@ -290,6 +290,7 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 
 			
 			track.lastSeen++;
+            track.current_exist =false;
 		}
 		// 添加删除长时间未出现的目标
 		removeLostTargets();
@@ -412,6 +413,12 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 			matched_vtrackings[i] = true;
 			matched_detections[best_det_idx] = true;
 
+			// Phase 3-B: 暴露“本帧匹配到的 Cluster id”（与 V2 update 中已有写法一致）。
+			// 仅记录匹配结果，不改变匹配/门限/代价函数/删除逻辑；
+			// 供上层读取该 Cluster 的 cells / PCA 特征值（用于 STATIC OBB geometry refinement）。
+			vtrackings[i].cluster_id = detections[best_det_idx].cluster_id;
+
+            vtrackings[i].current_exist = true;
 			
 			LOG_RAW(" [与%d匹配上] 当前跟踪id = %d，distance = %.3f\n", detections[best_det_idx].cluster_id, vtrackings[i].id, cost_matrix[i][best_det_idx]);
 			// LOG_RAW(" [与%d匹配] Track id = %d，distance = %.3f，Center(%.2f, %.2f, %.2f)，age=%d\n", 
@@ -423,8 +430,10 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 		else {
 			// 未匹配上：目标可能暂时消失了
 			vtrackings[i].lastSeen++;
+            vtrackings[i].current_exist = false;
 			LOG_RAW("may丢失, id = %d, loss_count = %d \n", vtrackings[i].id, vtrackings[i].lastSeen);
-		}
+            
+        }
 	}
 
 	// 4. 处理未匹配的检测 (新目标)

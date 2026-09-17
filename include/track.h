@@ -76,6 +76,11 @@ struct TrackedObstacle {
     bool  has_map_pos        = false;    ///< 是否已有有效 matched map position
     float map_x = 0.0f;                  ///< 最近一次有效 map position X (地图系 ENU)
     float map_y = 0.0f;                  ///< 最近一次有效 map position Y (地图系 ENU)
+    // 最近一次 matched 时的 OBB 长轴朝向（地图系 ENU, deg, 无向 [-180,180)）。
+    // 用途：miss 帧的可视化需要 雷达系 yaw = f(地图系 yaw, 当前 pose)，
+    //       否则自车转向时用旧雷达系 yaw 重建的框方向会漂（“已知残余误差”）。
+    float map_yaw_deg = 0.0f;            ///< 地图系 OBB 长轴朝向 (deg)
+    bool  has_map_yaw = false;           ///< map_yaw_deg 是否有效
     float map_vx = 0.0f;                 ///< 地图系速度 X (m/s, EMA)
     float map_vy = 0.0f;                 ///< 地图系速度 Y (m/s, EMA)
     float motion_step = 0.0f;            ///< 最近一次地图系帧间位移 (m)
@@ -84,6 +89,11 @@ struct TrackedObstacle {
     int   motion_static_run = 0;         ///< 连续静止证据计数
     int   motion_moving_run = 0;         ///< 连续运动证据计数
     std::vector<Point2D> recent_map_positions; ///< 最近 kMotionHistoryCap 个有效 matched map position
+
+    //==================
+    // DrawMapAndAllOverlay函数可视化用，有些(may丢失）,需要根据当前帧定位更新位置
+    //==================
+    bool current_exist = true;
 
     // 新增：指向卡尔曼滤波器的智能指针
     std::unique_ptr<KalmanFilter2D> kf;
@@ -109,6 +119,9 @@ struct TrackedObstacle {
         height = other.height;
         age = other.age;
         lastSeen = other.lastSeen;
+        // ⚠ current_exist 必须同步拷贝，否则 outTracks = m_tracker.vtrackings 的副本里
+        //   恒为默认值 true → DebugViewer 的 miss 分支永不执行
+        current_exist = other.current_exist;
         for(int i = 0; i < 3; i++) Translation[i] = other.Translation[i];
         for(int i = 0; i < 9; i++) Rotation[i] = other.Rotation[i];
         for(int i = 0; i < 4; i++) corners[i] = other.corners[i];
@@ -121,6 +134,8 @@ struct TrackedObstacle {
         has_map_pos       = other.has_map_pos;
         map_x             = other.map_x;
         map_y             = other.map_y;
+        map_yaw_deg       = other.map_yaw_deg;
+        has_map_yaw       = other.has_map_yaw;
         map_vx            = other.map_vx;
         map_vy            = other.map_vy;
         motion_step       = other.motion_step;
@@ -160,6 +175,9 @@ struct TrackedObstacle {
         height = other.height;
         age = other.age;
         lastSeen = other.lastSeen;
+        // ⚠ current_exist 必须同步拷贝，否则 outTracks = m_tracker.vtrackings 的副本里
+        //   恒为默认值 true → DebugViewer 的 miss 分支永不执行
+        current_exist = other.current_exist;
         for(int i = 0; i < 3; i++) Translation[i] = other.Translation[i];
         for(int i = 0; i < 9; i++) Rotation[i] = other.Rotation[i];
         for(int i = 0; i < 4; i++) corners[i] = other.corners[i];
@@ -172,6 +190,8 @@ struct TrackedObstacle {
         has_map_pos       = other.has_map_pos;
         map_x             = other.map_x;
         map_y             = other.map_y;
+        map_yaw_deg       = other.map_yaw_deg;
+        has_map_yaw       = other.has_map_yaw;
         map_vx            = other.map_vx;
         map_vy            = other.map_vy;
         motion_step       = other.motion_step;

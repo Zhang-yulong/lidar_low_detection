@@ -84,6 +84,14 @@ struct MapAnchoredTrack
     Point2D map_corners[4] = {}; ///< 4 角点在地图系（用于重建 OBB 区域）
     int     age        = 0;      ///< 最后一次更新锚点时的 track.age
     int     lastSeen   = 0;      ///< 最后一次更新锚点时的 track.lastSeen
+
+    // ---- Phase 3-B: STATIC OBB 的“已验证 yaw”记忆（地图系，无向长轴，弧度）----
+    // 语义与 map_x/map_y/map_corners 不同：这里只保存【被接受】的稳定 yaw
+    //   - 观测到可靠 PCA 主方向时写入（可观测 + 与历史连续 / 首次可观测）
+    //   - PCA 不可观测或与历史明显冲突时【不写入】（保留上一次可靠值）
+    //   - UpdateMapAnchors() 不修改这两个字段（保证锚点始终基于 RAW 几何）
+    bool    has_static_yaw     = false;
+    float   static_yaw_map_rad = 0.0f;
 };
 
 /**
