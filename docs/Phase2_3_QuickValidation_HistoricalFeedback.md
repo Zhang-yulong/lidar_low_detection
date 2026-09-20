@@ -147,7 +147,7 @@ ConvertClustersToTrackedObstacles → m_tracker.update()  (原有行为不变)
 - **地图锚点侧表** `MapAnchoredTrack`（`include/historical_feedback.h`）：
   - Track 匹配成功（`lastSeen==0`）→ 用当前位姿 `vehicleToMap` 锚定中心 + 4 角点。
   - Track miss → 冻结锚点（保留最后一次地图位置）。
-  - Track 被 `removeLostTargets` 删除 → 同步删除锚点。
+  - Track 被 `removeLongLostTargets` 删除 → 同步删除锚点。
 - **投影**：`mapToVehicle(anchor.map_x/y, current_pose)` → 当前雷达系；4 角点同法投影。
 - **栅格化**：`RasterizeQuadToGrid` 对投影后的凸四边形做 cell 中心采样点-in-多边形判定。
 - **年龄门控**：`anchor.age < kMinTrackAgeForFeedback(=3)` 的 Track 不产生反馈。
@@ -205,8 +205,8 @@ ConvertClustersToTrackedObstacles → m_tracker.update()  (原有行为不变)
 |---|---|---|
 | 1 | **历史拖影（移动目标）** | 本次**不做**运动预测；锚点=上一帧观测的地图位置，移动目标会滞后。这正是本实验要观察的负面证据。后续正式 Phase 2 需 `motion_state + vx/vy(地图系)`。 |
 | 2 | 错误坐标变换（x/y swap、镜像、旋转 90°/180°、degree/radian） | 已核对 `vehicleToMap/mapToVehicle` 互逆且含 heading 补偿；若图上 Historical 出现在镜像/对侧，优先查 `s_grid_heading_offset_deg` 与 lidar.cfg，勿改 Grid。 |
-| 3 | Track stale（miss 时锚点冻结但仍投影） | miss 时锚点冻结是**设计行为**（静态先验）；但 `lastSeen` 增大后仍会投影，需结合 `removeLostTargets(lastSeen>10)` 与 `kMinTrackAgeForFeedback` 观察。 |
-| 4 | Track 生命周期 | 沿用 `removeLostTargets: lastSeen>10`（约 1s），锚点随 tracker 删除同步移除。 |
+| 3 | Track stale（miss 时锚点冻结但仍投影） | miss 时锚点冻结是**设计行为**（静态先验）；但 `lastSeen` 增大后仍会投影，需结合 `removeLongLostTargets(lastSeen>10)` 与 `kMinTrackAgeForFeedback` 观察。 |
+| 4 | Track 生命周期 | 沿用 `removeLongLostTargets: lastSeen>10`（约 1s），锚点随 tracker 删除同步移除。 |
 | 5 | 静态/动态目标混用 | 当前**无 motion_state**，统一按静态先验投影；移动目标会拖影（见 #1）。 |
 | 6 | Localization invalid | 硬门控 `pose.valid`；无效时禁反馈、锚点冻结，恢复后按最后地图锚点继续（静态合理，动态会漂）。 |
 | 7 | HDMap 硬过滤 `in_road` 与软约束矛盾 | 与本次无关，但会导致 off-road 目标永不进 tracker → 无锚点 → 无法反馈（已知风险，见 `tracker-update-analysis.md`）。 |

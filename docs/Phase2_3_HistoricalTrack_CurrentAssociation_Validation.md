@@ -19,7 +19,7 @@
 2. ✅ 时序未变：`m_tracker.update()` → `ComputeHistoricalFeedback()`(上一帧锚点) → `DrawHistoricalFeedbackOverlay()` → `UpdateMapAnchors()`(帧末存本帧锚点)。未把 `UpdateMapAnchors()` 提前。
 3. ✅ 关联逻辑从“OBB 栅格化 + overlap/fused”改为“A → Base Cell → 3×3 → 候选 Cluster → 关联（SAME_TRACK_ID / GEOMETRIC 门控）”。
 4. ✅ DebugViewer 在既有 `HistoricalFeedback` 图层上叠加：Base Cell(橙)、8 邻居(青)、A 点(橙实心圆)、A→关联 Cluster 连线(绿)。
-5. ⚠️ **关键发现（Q5/Q7/Q8 的硬约束）**：当前 `SimpleTracker::removeLostTargets()` 实测删除条件是 `t.lastSeen > 5`（连续 6 帧 miss 即删），且 `UpdateMapAnchors()` 在 tracker 删除 Track 时**同步删除**其 Map Anchor。
+5. ⚠️ **关键发现（Q5/Q7/Q8 的硬约束）**：当前 `SimpleTracker::removeLongLostTargets()` 实测删除条件是 `t.lastSeen > 5`（连续 6 帧 miss 即删），且 `UpdateMapAnchors()` 在 tracker 删除 Track 时**同步删除**其 Map Anchor。
    因此如果 10011 在 **320～326 连续 7 帧** 全 miss，它在第 325 帧末就会被 tracker 删除 → 326 起**连 Map Anchor 也没有**，327 不可能再以“历史 Track=10011”产生 A。
    若你之前观察到 327 仍是 10011，说明实际 miss 间隔 ≤5 帧（或阈值在观察时不同）。这是进入 Phase 3 前必须先解决的生命周期问题。
 6. ⚠️ **317～327 逐帧数值未在本环境回放**（无匹配 pcap/定位数据组合），报告给出“应出现内容 + 提取命令”，请用你的 pcap 回放后回填（见 §12、§19 模板）。
@@ -243,7 +243,7 @@ grep -n "Track id: 10011\|HistoricalAssociation" log/ulog/ulog.log | sed -n '1,4
 | 327 | C5→10011 | 若 10011 存活：`SAME_TRACK_ID`；若已被删：新 ID 建立 → `GEOMETRIC`（若 A 距 C5 ≤0.5m） | 受 §0.5 生命周期约束 |
 
 ⚠️ **320～326 = 7 帧 miss > 当前 `lastSeen>5` 删除阈值（6 帧）**。按当前代码，10011 会在第 325 帧末被删除 → 锚点同步删除 → 326 起不再有“10011 的 A”。因此：
-- 若你的回放里 327 想看到“历史 Track=10011 的 A → C5”，必须保证 10011 在 320-326 内的实际 miss 间隔 ≤5 帧，或临时把 `SimpleTracker::removeLostTargets()` 阈值调大（仅实验；**本轮未改 tracker**）。
+- 若你的回放里 327 想看到“历史 Track=10011 的 A → C5”，必须保证 10011 在 320-326 内的实际 miss 间隔 ≤5 帧，或临时把 `SimpleTracker::removeLongLostTargets()` 阈值调大（仅实验；**本轮未改 tracker**）。
 - 这正是 §17 / Q8 需要补的“锚点独立生命周期”。
 
 ---
@@ -262,7 +262,7 @@ grep -n "Track id: 10011\|HistoricalAssociation" log/ulog/ulog.log | sed -n '1,4
 
 - `Track.age`：**累计匹配成功帧数**（每次匹配 +1，miss 不 +1）。不是“连续观测帧数”。
 - `Track.lastSeen`：**当前连续 miss 计数**（匹配成功清零，miss 每帧 +1）。
-- `SimpleTracker::removeLostTargets()` 实际执行 `t.lastSeen > 5`（代码核实；`track.cpp` 第 484 行），即**连续 6 帧 miss 删除**。
+- `SimpleTracker::removeLongLostTargets()` 实际执行 `t.lastSeen > 5`（代码核实；`track.cpp` 第 484 行），即**连续 6 帧 miss 删除**。
 - `MapAnchoredTrack.age/lastSeen`：最后一次更新时的快照；miss 期 age 冻结、lastSeen 同步 → 只要曾 ≥3 次匹配，miss 中依然过年龄门槛。
 - `anchor.age` 门槛（`kMinTrackAgeForFeedback=3`）保留为临时门槛，但**不作为“连续观测”证据**，真实状态以 `live_age/live_lastSeen/live_matched` 为准。
 - `Track.cluster_id`：诞生簇，**匹配时不更新**（代码核实）→ 不用它做簇对应。
@@ -368,7 +368,7 @@ anchor.age    >= kMinTrackAgeForFeedback   // = 3
 
 补充两个“时序/生命周期”事实（容易误判）：
 - **帧内顺序**：`ComputeHistoricalFeedback()` 在 `UpdateMapAnchors()` **之前** 执行 → 帧 N 用的是**帧 N-1 帧末**写入的 `anchor.age`（差一帧），这正是 §三 要求“用上一帧已有历史信息”。
-- **锚点随 tracker 删除而删除**：`removeLostTargets()` 当前为 `lastSeen > 5`，Track 被删则锚点同步删除；目标若以**新 ID** 重现，`age` 从 0 重新累计 → 又会经历一段 `hist_tracks=0`。这就是“不止一个障碍物会连续多帧 `hist_tracks=0`”的另一来源。
+- **锚点随 tracker 删除而删除**：`removeLongLostTargets()` 当前为 `lastSeen > 5`，Track 被删则锚点同步删除；目标若以**新 ID** 重现，`age` 从 0 重新累计 → 又会经历一段 `hist_tracks=0`。这就是“不止一个障碍物会连续多帧 `hist_tracks=0`”的另一来源。
 
 ### 21.3 你的 271~278 逐帧复算（与日志逐项吻合）
 
@@ -396,7 +396,7 @@ anchor.age    >= kMinTrackAgeForFeedback   // = 3
 3. `frame summary` 里的 `hist_tracks = out.size()` = **通过门槛的锚点数**，所以任一帧只要所有存活 Track 的 `anchor.age` 都 <3，就打印 `hist_tracks=0`（即使 tracker 里有一堆 `Track id`）；
 4. 还有两种会**直接**导致 `hist_tracks=0`：
    - `pose_valid==false`（定位无效）→ 函数提前 return，日志为 `localization invalid -> disabled`；
-   - 目标被 `removeLostTargets()`（`lastSeen>5`）删除、随后以新 ID 重现 → 锚点被删后再从 age=0 重新累计。
+   - 目标被 `removeLongLostTargets()`（`lastSeen>5`）删除、随后以新 ID 重现 → 锚点被删后再从 age=0 重新累计。
 
 ### 21.5 如何快速区分“年龄门槛”与“定位无效”
 

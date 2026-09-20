@@ -55,7 +55,7 @@ ConvertClustersToTrackedObstacles(outputClusters, detections)
    ▼
 m_tracker.update(detections, rec_timestamp_ms)          ← 贪心匹配 + ID 分配（9999 起）
    ▼
-m_debugViewer->DrawTrackOverlay / DrawMapAndAllOverlay        ← 可视化
+m_debugViewer->DrawTrackOverlay / DrawAllOverlay        ← 可视化
    ▼
 【仅 onlineModel】ConvertTrackToS2ObstacleBox(vtrackings) → sendUdpMsg
 ```

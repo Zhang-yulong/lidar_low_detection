@@ -82,7 +82,7 @@ constexpr float kObbEigenRatioThreshold = 4.0f;
  *   物理含义：对 STATIC 目标而言，"可靠方向"在帧间不应发生这么大幅度的变化；
  *             超过该值视为与历史明显冲突 → 保守使用历史 yaw。
  */
-constexpr float kObbYawJumpMaxDeg = 30.0f;
+constexpr float kObbYawJumpMaxDeg = 20.0f;
 
 /// 数值退化保护：λ1 小于该值时认为 cluster 几何完全退化（所有 cell 中心几乎重合）
 constexpr float kObbLambdaDegenerate = 1e-9f;

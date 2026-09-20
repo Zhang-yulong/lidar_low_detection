@@ -26,7 +26,24 @@ Model:
   
   openGroundViewer: 0 # 打开分割地面点的点云视图
   openClusterViewer: 0 # 打开聚类的点云视图
-  
+
+  useFoxgloveModule: 0
+# ========== Localization + HDMap（新增，见迁移设计文档）==========
+Localization:
+  enable: 0        # 0=不订阅定位 1=订阅（需同时 mapFilterModel=1 且非pcd模式）
+  timeout_ms: 1000 # 定位新鲜度阈值(ms)，超过判为无效，HDMap 过滤自动关闭
+  debugEnable: 0   # 0=off 1=使用固定调试位姿（仅离线pcap回放验证用，勿在实车开启）
+  debugX: 0.0      # 调试位姿 X（地图坐标 m）
+  debugY: 0.0      # 调试位姿 Y（地图坐标 m）
+  debugHeading: 0.0 # 调试航向（度，北=0 顺时针）
+
+HdmapFilter:
+  mapFilterModel: 0    # 0=关闭 HDMap 过滤 1=开启
+  mapPath: ""          # 为空则使用默认 /etc/echiev/hdmap/hdmap.bin
+  filterMode: 0        # 0=仅标记(默认，不删除Cluster) 1=软约束(降低置信度)
+  expandDistance: 0.5  # 道路边界外扩距离(m)，防误删
+  logEveryN: 50        # 每 N 帧打印一次 cluster 级地图过滤日志
+
   
 Viewer:
   projectionModel: 1
@@ -182,3 +199,13 @@ DebugViewer:
     enable: 0
     show: 0
     save: 0
+
+  TrackerOverlay:
+    enable: 0
+    show: 0
+    save: 0
+
+  HistoricalFeedback:
+    enable: 1
+    show: 0
+    save: 1

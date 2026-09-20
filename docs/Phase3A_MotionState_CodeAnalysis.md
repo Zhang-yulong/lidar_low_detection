@@ -65,7 +65,7 @@ g_previousTimestamp.store(rec_timestamp_ms)                 // ← 帧末更新�
 dt = (time - g_previousTimestamp)/1000
 if (detections.empty()):
     for each track: pos += vx*dt; corners += vx*dt; lastSeen++;
-    removeLostTargets(); return;
+    removeLongLostTargets(); return;
 else:
     predicted = track.pos + track.v*dt          // 仅用于代价
     cost[t][d] = |predicted - det|              // 雷达系最近邻
@@ -77,17 +77,17 @@ else:
         age++; lastSeen = 0;
     unmatched track: lastSeen++
     unmatched detection: 新建 track（age=0,lastSeen=0,id=nextTrackID++）
-    removeLostTargets()
+    removeLongLostTargets()
 ```
 
 - **不修改**匹配阈值 / 代价 / 预测 / 赋值 / 出生 / 删除。
-- `removeLostTargets()`：实测 `t.lastSeen > 5`（连续 6 帧 miss 删除）。
+- `removeLongLostTargets()`：实测 `t.lastSeen > 5`（连续 6 帧 miss 删除）。
 - **本阶段不在 tracker 内做 motion**，而是在 `update()` 之后新增独立步骤（不改变 tracker 行为与签名）。
 
 ### 1.4 `m_tracker.vtrackings`
 
 - 类型：`std::vector<TrackedObstacle>`（`SimpleTracker` 公有成员）。
-- 每帧被 `update()` 就地改写；跨帧累积；`removeLostTargets()` 删除超期目标。
+- 每帧被 `update()` 就地改写；跨帧累积；`removeLongLostTargets()` 删除超期目标。
 - 现有消费方：`DrawMapAndAllOverlay` / `DrawTrackOverlay` / `ConvertTrackToS2ObstacleBox` / `m_visBuffer.Publish` / `UpdateMapAnchors` / `ComputeHistoricalFeedback`。
 
 ### 1.5 `vx/vy` 的真实坐标系语义（重要）
@@ -129,7 +129,7 @@ CoordinateTransformer::vehicleToMap(veh_x, veh_y, vpose, map_x, map_y);
 | `include/SuTengDriver.cpp` | 实现 + 在 `m_tracker.update()` 之后调用 | 维护 map history / 证据 / 状态 / 日志 |
 | `include/DebugViewer.cpp` | `DrawMapAndAllOverlay()` 增加 1 行小标签（state + map 速度） | 可视化观察 |
 
-**不改**：`track.cpp`（`SimpleTracker::update` / `removeLostTargets`）、`ElevationMapGroundFilter.*`、`BuildGrid/Cluster/OBB`、`PointCloudTransform`、`HDMap`、`LocalizationManager`、`CoordinateTransformer`、UDP protocol、Phase 2 `ComputeHistoricalFeedback` / 3×3 Search。
+**不改**：`track.cpp`（`SimpleTracker::update` / `removeLongLostTargets`）、`ElevationMapGroundFilter.*`、`BuildGrid/Cluster/OBB`、`PointCloudTransform`、`HDMap`、`LocalizationManager`、`CoordinateTransformer`、UDP protocol、Phase 2 `ComputeHistoricalFeedback` / 3×3 Search。
 
 > 说明：不改 `SimpleTracker::update()` 的原因——保持 tracker 匹配/删除行为完全不变（保护 Phase 2），且避免修改其函数签名（需要额外传入 pose）。motion 作为 `update()` 之后的一步，输入来自 `vtrackings` + 已有 `loc_pose`，等价且更安全。
 
@@ -227,7 +227,7 @@ map_v    = EMA(step_vec / dt, alpha=V_EMA_ALPHA)
 
 1. `ComputeHistoricalFeedback()` / 3×3 Search / `SAME_TRACK_ID` / `GEOMETRIC` **零改动**。
 2. `UpdateMapAnchors()` 零改动：其只读 `t.id / t.pos_* / t.corners / t.lastSeen / t.age`，新增字段不影响。
-3. `SimpleTracker::update()` / `removeLostTargets()` 零改动：motion 是 `update()` **之后**的独立步骤。
+3. `SimpleTracker::update()` / `removeLongLostTargets()` 零改动：motion 是 `update()` **之后**的独立步骤。
 4. 新增的 `map_x/map_y` 是**新字段**，不复用/覆盖 `pos_x/pos_y`；`vx/vy` 语义不变。
 5. Phase 2 的 `anchor` 侧表与 motion 字段互不干扰（motion 只读 pose + track pos 并写新字段）。
 
@@ -293,7 +293,7 @@ UNKNOWN v=(0.00,0.00)m/s      // 灰色
 | `include/SuTengDriver.cpp` | 实现 `UpdateTrackMotionStates()`；在 `m_tracker.update()` 之后调用；新增 `[MotionState]` 日志 |
 | `include/DebugViewer.cpp` | `DrawMapAndAllOverlay()` 增加 1 行状态小标签（state + map 速度） |
 
-**未修改**：`track.cpp`（`SimpleTracker::update` / `removeLostTargets`）、`ElevationMapGroundFilter.*`、`PointCloudTransform`、`HDMap`、`LocalizationManager`、`CoordinateTransformer`、UDP、Phase 2 `ComputeHistoricalFeedback` / 3×3 Search。
+**未修改**：`track.cpp`（`SimpleTracker::update` / `removeLongLostTargets`）、`ElevationMapGroundFilter.*`、`PointCloudTransform`、`HDMap`、`LocalizationManager`、`CoordinateTransformer`、UDP、Phase 2 `ComputeHistoricalFeedback` / 3×3 Search。
 
 ### 13.2 编译结果
 

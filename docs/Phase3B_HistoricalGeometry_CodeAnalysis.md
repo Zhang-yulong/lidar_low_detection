@@ -173,7 +173,7 @@ kEnableHistoricalFusedOBB       = false;  // 3-B-2：加权 OBB 写回
 | `include/SuTengDriver.h` | include 新头；新增 `m_historicalGeometry` 与 `ApplyHistoricalGeometry()` 声明 |
 | `include/SuTengDriver.cpp` | 在 `UpdateMapAnchors()` 之后调用 `ApplyHistoricalGeometry(outputClusters)`；实现该函数并输出 `[HistoricalGeometry]` 日志 |
 
-**未修改**：`track.cpp`（`SimpleTracker::update` / `removeLostTargets`）、`track.h`、`ElevationMapGroundFilter.*`（含 `ComputeClusterOBB`）、`PointCloudTransform`、`ComputeHistoricalFeedback` / 3×3 Search、`UpdateMapAnchors`、`HDMap`、`LocalizationManager`、`CoordinateTransformer`、UDP。
+**未修改**：`track.cpp`（`SimpleTracker::update` / `removeLongLostTargets`）、`track.h`、`ElevationMapGroundFilter.*`（含 `ComputeClusterOBB`）、`PointCloudTransform`、`ComputeHistoricalFeedback` / 3×3 Search、`UpdateMapAnchors`、`HDMap`、`LocalizationManager`、`CoordinateTransformer`、UDP。
 
 ### D.2 开关与参数（`historical_geometry.h`）
 

@@ -131,7 +131,7 @@ bool HDMapFilter::filterClusters(std::vector<GridCluster>& clusters,
 
         if (do_log)
         {
-            LOG_RAW("[HDMapFilter] frame=%llu cluster=%d center_veh=(%.2f,%.2f) "
+            LOG_RAW("[HDMapFilter] frame=%llu cluster=%d center_lidar=(%.2f,%.2f) "
                    "center_map=(%.3f,%.3f) in_road=%d map_valid=%d confidence=%.2f\n",
                    static_cast<unsigned long long>(frame_id),
                    c.id, veh_x, veh_y, map_x, map_y,

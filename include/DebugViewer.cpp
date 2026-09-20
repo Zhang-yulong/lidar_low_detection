@@ -1636,9 +1636,19 @@ void DebugViewer::DrawMapAndAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& gr
                                                pos_x, pos_y);
 
         }
+        
+        /*方法二: 当SutengDriver::UpdateTrackMotionStates写了针对漏检帧的重投影的逻辑*/
+        std::vector<cv::Point> pts(4);
+        for (int j = 0; j < 4; ++j)
+        {
+            int px, py;
+            WorldToPixel(t.corners[j].x, t.corners[j].y, px, py, gridCfg);
+            pts[j] = cv::Point(px, py);
+        }
+        
+        /*方法一：当SutengDriver::UpdateTrackMotionStates没有针对漏检帧（目前是保持和上一帧一样的位置）
+        重新根据当前帧定位，将map系位置转到当前帧雷达系下，导致本窗口可视化是（雷达系），障碍物飘。
 
-
-        // corners[4] 多边形: 匹配成功 → 白色; miss → 青色(粗线)
         std::vector<cv::Point> pts(4);
         if (!need_map_rebuild)
         {
@@ -1711,7 +1721,9 @@ void DebugViewer::DrawMapAndAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& gr
                     t.id, t.lastSeen, t.map_x, t.map_y, fx, fy, len, wid,
                     t.has_map_yaw ? "map" : "stale_radar", yaw / kDeg2RadF);
         }
+        */
 
+        // corners[4] 多边形: 匹配成功 → 白色; miss → 青色(粗线)
         if(!need_map_rebuild)
             cv::polylines(image, pts, true, cv::Scalar(255, 255, 255), 2);
         else
@@ -1744,8 +1756,9 @@ void DebugViewer::DrawMapAndAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& gr
                         cv::FONT_HERSHEY_SIMPLEX, 0.35, st_color, 1);
         }
 
-        //运动和未知的时候给箭头
-        if(t.motion_state == MotionState::MOVING || t.motion_state == MotionState::UNKNOWN){
+        // //运动和未知的时候给箭头
+        // if(t.motion_state == MotionState::MOVING || t.motion_state == MotionState::UNKNOWN){
+        if(t.motion_state == MotionState::MOVING ){
         // 速度向量 (青色箭头, 与像素/米比例一致)
             float v_norm = std::sqrt(t.vx * t.vx + t.vy * t.vy);
             if (v_norm > 1e-3f)

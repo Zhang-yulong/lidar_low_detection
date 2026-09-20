@@ -187,8 +187,8 @@ DebugViewer:
 
   Cluster:
     enable: 0
-    show: 0
-    save: 0
+    show: 1
+    save: 1
 
   BoundingBox:
     enable: 0
@@ -201,11 +201,11 @@ DebugViewer:
     save: 1
 
   TrackerOverlay:
-      enable: 0
-      show: 0
+      enable: 1
+      show: 1
       save: 1
 
   HistoricalFeedback:
-      enable: 1
+      enable: 0
       show: 1
       save: 1

@@ -182,7 +182,7 @@ struct TrackedObstacle {
 
 `SimpleTracker`（`track.cpp:258`，V1）：贪心匹配，`match_threshold = 0.5m`，代价为 `|pos+v·dt − detection_pos|`；
 `matched` 分支用检测几何覆盖 `pos_z/depth/width/height/corners`（并 `age++`、`lastSeen=0`）；
-`miss` 分支只 `lastSeen++`；空 detections 分支 `pos/corners += v·dt`；`removeLostTargets()` 删除 `lastSeen>10`。
+`miss` 分支只 `lastSeen++`；空 detections 分支 `pos/corners += v·dt`；`removeLongLostTargets()` 删除 `lastSeen>10`。
 
 ### 4.1 可直接读取的 RAW 几何（重要结论）
 
@@ -529,7 +529,7 @@ miss 帧 / pose 无效 / MOVING
 miss_frames > kGeomPriorMaxMissFrames(=5) → STALE
    │  停止 refinement（输出 RAW）；prior 保留（track 复活可继续）
    ▼
-Track 被 removeLostTargets 删除 (lastSeen>10) → 侧表 erase
+Track 被 removeLongLostTargets 删除 (lastSeen>10) → 侧表 erase
 ```
 
 ### 11.1 "什么算有效观测"

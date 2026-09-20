@@ -1071,21 +1071,22 @@ void SutengDriver::ProcessPcapCloud(){
                 
                 // LOG_RAW("Track id: %d: Center(%.2f, %.2f, %.2f), age=%d\n", track.id, track.pos_x, track.pos_y, track.pos_z, track.age);
             }
-        }
-
-        // ── Phase 3-A: Motion State（map frame, UNKNOWN/STATIC/MOVING）──
-        // 在 m_tracker.update() 之后：维护 map position history + 运动证据 + 状态机，
-        // 结果写回 m_tracker.vtrackings（供 DebugViewer / 日志读取）。
-        // 不修改 tracker 匹配/删除，不修改 Phase 2 关联。
-        UpdateTrackMotionStates(loc_pose, have_pose, rec_timestamp_ms);
-        LOG_RAW("\n");
         
-        // ── Map Anchor 维护（Phase 2 侧表；必须使用 RAW 几何）────────────────────
-        // 时序要求：锚点必须在 geometry refinement 之前刷新，使 map anchor / 历史关联始终基于
-        // RAW 检测几何，不形成 "Refined → Anchor → Association → Refined" 的反馈回路。
-        // UpdateMapAnchors() 只维护 m_mapTracks（map 位置/角点，取 RAW vtrackings），
-        // 不读不写 tracker 几何状态；其中的 Phase 3-B yaw 记忆字段由 RefineStaticObbGeometry 维护。
-        UpdateMapAnchors(loc_pose, have_pose);
+
+            // ── Phase 3-A: Motion State（map frame, UNKNOWN/STATIC/MOVING）──
+            // 在 m_tracker.update() 之后：维护 map position history + 运动证据 + 状态机，
+            // 结果写回 m_tracker.vtrackings（供 DebugViewer / 日志读取）。
+            // 不修改 tracker 匹配/删除，不修改 Phase 2 关联。
+            UpdateTrackMotionStates(loc_pose, have_pose, rec_timestamp_ms);
+            LOG_RAW("\n");
+            
+            // ── Map Anchor 维护（Phase 2 侧表；必须使用 RAW 几何）────────────────────
+            // 时序要求：锚点必须在 geometry refinement 之前刷新，使 map anchor / 历史关联始终基于
+            // RAW 检测几何，不形成 "Refined → Anchor → Association → Refined" 的反馈回路。
+            // UpdateMapAnchors() 只维护 m_mapTracks（map 位置/角点，取 RAW vtrackings），
+            // 不读不写 tracker 几何状态；其中的 Phase 3-B yaw 记忆字段由 RefineStaticObbGeometry 维护。
+            UpdateMapAnchors(loc_pose, have_pose);
+        }
 
         // ── Phase 3-B (v2): STATIC Track OBB Geometry Refinement ─────────────────
         // 只读 m_tracker.vtrackings（RAW）；结果写入 outTracks（RAW 快照副本），供 Debug/可视化/UDP 使用。
@@ -1297,8 +1298,9 @@ void SutengDriver::UpdateMapAnchors(const LocalizationManager::Pose& pose, bool 
 //   - 不改 SimpleTracker::update() 匹配/删除，不改 Phase 2 关联。
 
 // 前置声明：定义在本文件 Phase 3-B 段（RefineStaticObbGeometry 之前），
-// 供 UpdateTrackMotionStates 记录 map_yaw_deg 复用（同一 TU 内的 static 函数）。
+// 供 UpdateTrackMotionStates 记录 map_yaw_deg / 漏检帧重投影复用（同一 TU 内的 static 函数）。
 static float RadarYawRadToMapYawRad(float yaw_rad, const VehiclePose& vpose);
+static float MapYawRadToRadarYawRad(float yaw_map_rad, const VehiclePose& vpose);
 
 void SutengDriver::UpdateTrackMotionStates(const LocalizationManager::Pose& pose,
                                            bool pose_valid,
@@ -1320,6 +1322,7 @@ void SutengDriver::UpdateTrackMotionStates(const LocalizationManager::Pose& pose
     for (auto& t : m_tracker.vtrackings)
     {
         bool new_obs = false;
+        bool reanchored = false;   // 本帧是否被“地图系 anchored 重投影”修正（仅供日志）
 
         // ---- 只有 matched + pose valid 才产生新的 map 观测 ----
         if (t.lastSeen == 0 && pose_valid)
@@ -1384,7 +1387,7 @@ void SutengDriver::UpdateTrackMotionStates(const LocalizationManager::Pose& pose
 
             // 3) 窗口证据：净位移 + 方向一致性
             const int n = static_cast<int>(t.recent_map_positions.size());
-            float net = 0.0f;
+            float net = 0.0f; //净位移
             bool  dir_ok = false;
             if (n >= 2)
             {
@@ -1441,17 +1444,113 @@ void SutengDriver::UpdateTrackMotionStates(const LocalizationManager::Pose& pose
                         t.motion_state = MotionState::STATIC;
                     break;
             }
-        }
-        // 漏检帧：不追加 history、不伪造位置、不更新证据/状态（miss ≠ static evidence）
 
-        // ---- 日志：matched / miss 都输出，便于判断“为什么”是该状态 ----
-        LOG_RAW("[MotionState] Track=%d age=%d lastSeen=%d state=%s Center(%.2f,%.2f,%.2f) map=(%.2f,%.2f) step=%.3f net=%.3f dir=%.1f v=(%.2f,%.2f) obs=%d hist=%zu srun=%d mrun=%d\n",
-                t.id, t.age, t.lastSeen, MotionStateName(t.motion_state),
-                t.pos_x, t.pos_y, t.pos_z,
-                t.map_x, t.map_y, t.motion_step, t.motion_net, t.motion_dir_deg,
-                t.map_vx, t.map_vy, (int)new_obs,
-                t.recent_map_positions.size(),
-                t.motion_static_run, t.motion_moving_run);
+            // ---- 日志：matched 都输出，便于判断“为什么”是该状态 ----
+            LOG_RAW("[MotionState] Track=%d {age=%d lastSeen=%d} state=%s Center(%.2f,%.2f,%.2f) map=(%.2f,%.2f) step=%.3f 净位移=%.3f dir=%.1f mapV=(%.2f,%.2f) obs=%d anchor=%d hist=%zu srun=%d mrun=%d\n",
+                    t.id, t.age, t.lastSeen, MotionStateName(t.motion_state),
+                    t.pos_x, t.pos_y, t.pos_z,
+                    t.map_x, t.map_y, t.motion_step, t.motion_net, t.motion_dir_deg,
+                    t.map_vx, t.map_vy, (int)new_obs, (int)reanchored,
+                    t.recent_map_positions.size(),
+                    t.motion_static_run, t.motion_moving_run);
+        
+        }
+        else if (pose_valid && t.has_map_pos)
+        {
+            // ---- 漏检帧（含 detections 全空的帧）：地图系 anchored 重投影 ----
+            // 背景（与 track.cpp 漏检分支的注释同源）：
+            //   SimpleTracker::update() 的漏检分支拿不到位姿，只能做“雷达系 v*dt 外推”或
+            //   “位置不动”，自车一动，目标就等效于跟着车跑（静止目标在地图系里会漂）。
+            //   因此这里在【定位有效 + 已有地图锚】时，把地图系位置按当前 pose 重投影回雷达系，
+            //   中心与 OBB 角点一并重建（与 DebugViewer::DrawMapAndAllOverlay 完全同源）。
+            // 设计取舍（重要）：
+            //   - 不 coast（不按 map_v 外推 map_x/map_y）：否则下一帧 matched 时
+            //     motion_step=|观测-预测|≈0 → Phase 3-A 会把运动目标误判为 STATIC。
+            //     静止目标的地图系位置本来就不动，不 coast 对主场景（低矮静态障碍）无损。
+            //   - 不追加 recent_map_positions：重投影不是新观测，不污染运动证据/状态机。
+
+
+            // 1) 地图系 → 本帧雷达系（位置）
+            //    ⚠ 覆盖前先存下 pos/v：
+            //      pos_pre = tracker 本帧漏检分支已做过一次 pos += v_old*dt 外推后的值
+            //      v_old   = 上一帧写回（或上次 matched 计算）的雷达系速度
+            //    两者用于第 3) 步把速度写回成“与本次重投影自洽”的值。
+            const float pos_pre_x = t.pos_x;
+            const float pos_pre_y = t.pos_y;
+            const float vx_old    = t.vx;
+            const float vy_old    = t.vy;
+
+            double veh_x = 0.0, veh_y = 0.0;
+            CoordinateTransformer::mapToVehicle(static_cast<double>(t.map_x),
+                                                static_cast<double>(t.map_y),
+                                                vpose, veh_x, veh_y);
+            t.pos_x = static_cast<float>(veh_x);
+            t.pos_y = static_cast<float>(veh_y);
+
+            // 2) OBB 角点重建（顺序与 BuildObbCorners 一致: 左下→右下→右上→左上）
+            //    yaw 优先用“地图系朝向 → 本帧雷达系”（自车转向后框方向仍正确），
+            //    无地图 yaw 时退化为旧角点反算的雷达系 yaw（等价假设自车朝向未变）。
+            const float dx_c = t.corners[1].x - t.corners[0].x;
+            const float dy_c = t.corners[1].y - t.corners[0].y;
+
+            float yaw_radar = std::atan2(dy_c, dx_c);
+            if (t.has_map_yaw)
+            {
+                yaw_radar = MapYawRadToRadarYawRad(t.map_yaw_deg * kPi / 180.0f, vpose);
+            }
+
+            float len = t.depth;
+            float wid = t.width;
+            if (len <= 1e-3f)
+            {
+                len = std::sqrt(dx_c * dx_c + dy_c * dy_c);
+            }
+            if (wid <= 1e-3f)
+            {
+                const float dx_w = t.corners[3].x - t.corners[0].x;
+                const float dy_w = t.corners[3].y - t.corners[0].y;
+                wid = std::sqrt(dx_w * dx_w + dy_w * dy_w);
+            }
+            len = std::max(len, 0.05f);   // 退化保护：避免框退化为一个点
+            wid = std::max(wid, 0.05f);
+
+            BuildObbCorners(t.pos_x, t.pos_y, yaw_radar, len, wid, t.corners);
+
+            // 3) 写回雷达系速度 vx/vy（供下一帧 SimpleTracker::update 的代价矩阵预测）
+            //    为什么必须写回：
+            //      下一帧关联用的是 predicted_pos = pos + v*dt（见 track.cpp 的 predicted_positions），
+            //      其中 pos 是【本帧重投影后的新位置】。若 v 仍是上次 matched 的旧雷达系值，
+            //      预测会二次计入运动中已经包含的部分，偏差变大 → 超过 match_threshold(0.5m)
+            //      → 关联失败 → 新 ID（断链）。
+            //    取值：与 tracker 的 matched 分支同一约定——
+            //      “雷达系两点差分”（含自车运动造成的视在运动）。
+            //      推导：tracker 本帧已做过 pos += v_old*dt，先撤销它再差分：
+            //        v_new = (p_reproj - (pos_pre - v_old*dt)) / dt = (p_reproj - pos_pre)/dt + v_old
+            //      对静止目标：p_reproj 随自车反向移动 v_ego*dt，得到 v_new = -v_ego(雷达系) ✓
+            //      对运动目标：得到 1 帧滞后的视在速度（与不 coast 的取舍一致）✓
+            //    注：只在 dt 有效时更新，避免除零；dt 与 tracker 的 delta_time 同源
+            //        （同一 g_previousTimestamp），所以这里的“撤销”是精确的。
+            if (dt > 1e-3)
+            {
+                const float inv_dt = static_cast<float>(1.0 / dt);
+                t.vx = (t.pos_x - pos_pre_x) * inv_dt + vx_old;
+                t.vy = (t.pos_y - pos_pre_y) * inv_dt + vy_old;
+            }
+
+            reanchored = true;
+            
+            // ---- 日志：miss 都输出，便于判断“为什么”是该状态 ----
+            LOG_RAW("[MotionState] Track=%d miss{age=%d lastSeen=%d} state=%s Center(%.2f,%.2f,%.2f) map=(%.2f,%.2f) step=%.3f 净位移=%.3f dir=%.1f mapV=(%.2f,%.2f) obs=%d anchor=%d hist=%zu srun=%d mrun=%d\n",
+                    t.id, t.age, t.lastSeen, MotionStateName(t.motion_state),
+                    t.pos_x, t.pos_y, t.pos_z,
+                    t.map_x, t.map_y, t.motion_step, t.motion_net, t.motion_dir_deg,
+                    t.map_vx, t.map_vy, (int)new_obs, (int)reanchored,
+                    t.recent_map_positions.size(),
+                    t.motion_static_run, t.motion_moving_run);
+        
+        }
+
+        
     }
 }
 

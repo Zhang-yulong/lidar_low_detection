@@ -289,11 +289,15 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 			}
 
 			
+			// 注意：Tracker 拿不到位姿，这里的 v*dt 外推只是【无定位/无地图锚时的退化近似】。
+			//       定位有效时，真正的"地图系 anchored 重投影"(地图系位置 → 本帧雷达系，
+			//       中心 + OBB 角点一起重建) 由 SutengDriver::UpdateTrackMotionStates 完成，
+			//       会覆盖本处的外推结果（与 DebugViewer::DrawMapAndAllOverlay 同源）。
 			track.lastSeen++;
             track.current_exist =false;
 		}
 		// 添加删除长时间未出现的目标
-		removeLostTargets();
+		removeLongLostTargets();
 		return;
 	}
 
@@ -440,7 +444,7 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 	for (int k = 0; k < cols; k++) {
 		if (!matched_detections[k]) {
 			// 创建新轨迹
-			// TrackedObstacle new_track = detections[k];
+			// TrackedObstacle new_track = detections[k];  //内部没有写构造函数时使用的
 			TrackedObstacle new_track(detections[k].pos_x, detections[k].pos_y, 0.0f , 0.0f); // 使用新构造函数
 
 			// 构造函数只初始化 pos_x/pos_y/vx/vy/kf，需补拷 detections[k] 的几何字段
@@ -469,7 +473,7 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 	}
 
 	// 5. 清理长时间未出现的目标
-	removeLostTargets();
+	removeLongLostTargets();
 
 
 	// 6. 防止nextTrackID溢出
@@ -486,7 +490,7 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 	}
 }
 
-void SimpleTracker::removeLostTargets(){
+void SimpleTracker::removeLongLostTargets(){
 // 移除 lastSeen > 10 的目标（例如：连续10帧没看到就删掉）
 	auto it = std::remove_if(vtrackings.begin(), vtrackings.end(),
 		[](const TrackedObstacle& t) { 
@@ -535,9 +539,10 @@ void SimpleTracker::update_V2(const std::vector<TrackedObstacle>& detections, co
 
 			
 			track.lastSeen++;
+			track.current_exist = false;   // V2 与 V1 保持一致：漏检帧标记
 		}
 		// 添加删除长时间未出现的目标
-		removeLostTargets();
+		removeLongLostTargets();
 		return;
 	}
 
@@ -713,6 +718,9 @@ void SimpleTracker::update_V2(const std::vector<TrackedObstacle>& detections, co
             // 这样 Track 不是停在旧位置，
             // 而是继续向预测位置移动。
             // ----------------------------------------------------
+			// 漏检：先用 v*dt 在【雷达系】预测位置（无定位 / 无地图锚时的退化近似）。
+			//       若本帧定位有效，SutengDriver::UpdateTrackMotionStates 会随后
+			//       用地图系锚点重投影覆盖这里的 pos_x/pos_y/corners（与 DrawMapAndAllOverlay 同源）。
             vtrackings[t].pos_x += vtrackings[t].vx * delta_time;
             vtrackings[t].pos_y += vtrackings[t].vy * delta_time;
 			for (int c = 0; c < 4; c++) {
@@ -722,6 +730,7 @@ void SimpleTracker::update_V2(const std::vector<TrackedObstacle>& detections, co
 			}
 
             vtrackings[t].lastSeen++;
+            vtrackings[t].current_exist = false;   // V2 与 V1 保持一致：漏检帧标记
 
 
             LOG_RAW("may丢失, id = %d, loss_count = %d \n",
@@ -773,7 +782,7 @@ void SimpleTracker::update_V2(const std::vector<TrackedObstacle>& detections, co
 	}
 
 	// 5. 清理长时间未出现的目标
-	removeLostTargets();
+	removeLongLostTargets();
 
 
 	// 6. 防止nextTrackID溢出

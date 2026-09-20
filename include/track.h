@@ -239,7 +239,7 @@ public:
     );
 
 private:
-    void removeLostTargets();
+    void removeLongLostTargets();
 };
 
 

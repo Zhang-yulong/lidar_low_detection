@@ -69,7 +69,7 @@ UpdateMapAnchors()            ← 帧末维护 MapAnchoredTrack 侧表
 | Tracker 匹配 | 贪心最近邻，`match_threshold = 0.5 m`，代价用速度外推位置，赋值用**原始检测位置** | 不引入 Hungarian |
 | `Track.age` | **匹配成功帧计数**（匹配 +1；miss 不增），birth=0 | 运动状态不能用“存在即 STATIC” |
 | `Track.lastSeen` | **连续 miss 计数**（匹配清零，miss +1） | 生命周期依据 |
-| `removeLostTargets()` | 实测 `t.lastSeen > 5`（**连续 6 帧 miss 删除**） | ⚠️ 与架构文档旧写 `>10` 不符，以代码为准 |
+| `removeLongLostTargets()` | 实测 `t.lastSeen > 5`（**连续 6 帧 miss 删除**） | ⚠️ 与架构文档旧写 `>10` 不符，以代码为准 |
 | `Track.cluster_id` | **只在诞生时写一次，匹配时不回写** | 不能当“本帧簇 ID” |
 | miss（`detections.empty()` 分支） | `pos += vx*dt`，`corners += vx*dt`（雷达系外推） | ⚠️ 自车运动下这是错误外推，应改为 map 投影 |
 | miss（有检测但本 track 未匹配） | 只 `lastSeen++`，**位置/角点不更新（保持旧值）** | 静默 stale |
@@ -80,7 +80,7 @@ UpdateMapAnchors()            ← 帧末维护 MapAnchoredTrack 侧表
 
 ### 1.2 与架构文档的差异修正
 
-- 架构文档 §15.1 写 `removeLostTargets(): lastSeen > 10`；**实测代码为 `> 5`**（`track.cpp`），即**连续 6 帧 miss 即删除**。Phase 3 的 coast 设计必须以 `>5` 为现状基线。
+- 架构文档 §15.1 写 `removeLongLostTargets(): lastSeen > 10`；**实测代码为 `> 5`**（`track.cpp`），即**连续 6 帧 miss 即删除**。Phase 3 的 coast 设计必须以 `>5` 为现状基线。
 - 架构文档提到的 `map_x/map_y/stable_yaw/motion_state` 在 `TrackedObstacle` 上**当前并不存在**；Phase 2 只是用外部侧表 `MapAnchoredTrack` 做了最小等价。
 
 ---
@@ -817,7 +817,7 @@ grep -n "\[MotionState\]\|\[StatFusion\]\|\[Coast\]\|\[HistoricalAssociation\]" 
 
 1. `TrackedObstacle` 的**拷贝构造/赋值是手写的**——新增字段必须手动加入。
 2. `g_previousTimestamp` 是全局帧间时间差来源（`dt`）。
-3. `removeLostTargets()` 实际是 `lastSeen > 5`（不是 10）。
+3. `removeLongLostTargets()` 实际是 `lastSeen > 5`（不是 10）。
 4. `Track.cluster_id` 匹配时**不回写**。
 5. `depth/width` 与 `corners` 必须同时更新，否则与 center/L/W 不一致。
 6. OBB corners **顺序**必须与现有保持一致。
