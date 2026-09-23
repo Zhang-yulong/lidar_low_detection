@@ -265,6 +265,7 @@ bool YamlReader::LoadConfig(SELF_DEBUG_CONFIG& config)
             config.Overlay            = readDebugCfg(DebugViewerNode, "Overlay");
             config.TrackerOverlay     = readDebugCfg(DebugViewerNode, "TrackerOverlay");
             config.HistoricalFeedback = readDebugCfg(DebugViewerNode, "HistoricalFeedback");
+            config.RawImageObb         = readDebugCfg(DebugViewerNode, "RawImageObb");
         }
         else{
             throw std::runtime_error("Error: Lack <DebugViewer>");

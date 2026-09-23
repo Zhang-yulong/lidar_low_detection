@@ -211,3 +211,10 @@ DebugViewer:
     enable: 1
     show: 0
     save: 1
+
+  # Phase 3-B': 1cm Raw Point Image + Grid ROI + minAreaRect 实验 A/B 对比图
+  #   白=Grid PCA OBB, 青=Raw Point Image OBB, 品红=当前系统 Track 框
+  RawImageObb:
+    enable: 1
+    show: 1
+    save: 1

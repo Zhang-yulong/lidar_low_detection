@@ -316,6 +316,29 @@ struct GridCluster
     float   obb_orientation_confidence = 0.0f;  // (λ1-λ2)/(λ1+λ2)，仅诊断用
 
     // ========================================================================
+    // Phase 3-B': 1cm Raw Point Image OBB（实验字段，仅 Debug 可视化 / 日志）
+    //
+    //   数据来源: 1cm Raw Point Image 在【本 cluster 的 Grid cell 世界范围】内的 ROI 像素
+    //   计算方式: cv::minAreaRect(ROI 内全部非零像素)  ← 不做 findContours / morphology
+    //   语义:     与 obb_* 完全并列，不参与 tracker / detections / UDP / HDMap
+    //             length >= width；yaw ∈ [0, π)；corners[0]→corners[1] = 长轴
+    // ========================================================================
+    bool    has_img_obb       = false;      // 实验 OBB 是否有效（仅用于 Debug 分支）
+    Point2D img_corners[4]    = {};         // 4 角点（左下→右下→右上→左上）
+    float   img_center_x      = 0.0f;       // OBB 中心 X (m, 车体系)
+    float   img_center_y      = 0.0f;       // OBB 中心 Y (m, 车体系)
+    float   img_length        = 0.0f;       // 长轴 (m)
+    float   img_width         = 0.0f;       // 短轴 (m)
+    float   img_yaw_rad       = 0.0f;       // 长轴朝向 (rad)，范围 [0, π)（与 obb_angle 的 [-π/2, π/2) 不同，比较时需 mod π）
+    int     img_pixel_count   = 0;          // ROI 内被占据的 1cm 像素数（膨胀前，即真实占用像素）
+    int     img_pixel_count_dilated = 0;    // 膨胀后的像素数（参与 minAreaRect 的点集大小）
+    int     img_raw_pt_count  = 0;          // ROI 内障碍物点数（像素计数之和）
+    int     img_roi_min_col   = 0;          // ROI 在 1cm Image 中的列范围（含边界）
+    int     img_roi_max_col   = 0;
+    int     img_roi_min_row   = 0;          // ROI 在 1cm Image 中的行范围（含边界）
+    int     img_roi_max_row   = 0;
+
+    // ========================================================================
     // HDMap 软约束标签（由 HDMapFilter 填充，Cluster 级，见迁移设计文档）
     // ========================================================================
     // 设计原则（软约束，不是硬过滤）：
@@ -442,6 +465,28 @@ public:
     const std::vector<GridCell>& GetGrid() const { return m_vGridCell; }
     int GetGridRows() const { return m_grid_rows; }
     int GetGridCols() const { return m_grid_cols; }
+
+    // ========================================================================
+    // Phase 3-B': 1cm Raw Point Image 只读访问（供调试/可视化，不参与任何算法决策）
+    // ========================================================================
+    /// @brief 1cm Raw Point Image 的分辨率（1cm/pixel）；需 public，供 DebugViewer 反算 ROI 像素→世界坐标
+    static constexpr float kRawImageResolution = 0.01f;  // 1cm / pixel
+
+    // ---- Phase 3-B' 实验开关：ROI 内像素膨胀（针对低矮目标点太少导致的 OBB 抖动）----
+    //   Chebyshev 半径，单位像素：0 = 关闭；1 = 3×3（+1cm）；2 = 5×5（+2cm）
+    //   代价：各向同性放大 L/W 约 2*R*1cm（见 kRawImageDilateYawOnly 说明）
+    static constexpr int  kRawImageDilateRadius = 2;
+    //   true  = 只用膨胀集定【方向 yaw】，L/W/中心用【原始像素】在该方向上重投影（尺寸不被放大；
+    //           但原始点共线时 W≈0 会退化）
+    //   false = 全部量都用膨胀集（L/W 偏大 2*R*1cm，但对极细目标有最小厚度保障）
+    static constexpr bool kRawImageDilateYawOnly = false;
+    /// @brief 1cm Raw Point Image：0 = 无点, 255 = 有障碍物点（row * W + col）
+    const std::vector<uint8_t>& GetRawPointImage() const { return m_rawPointImage; }
+    /// @brief 1cm Raw Point Image 的每像素点数（饱和 255），仅用于日志统计
+    const std::vector<uint8_t>& GetRawPointCounter() const { return m_rawPointCounter; }
+    int   GetRawImageWidth()      const { return m_rawImageW; }
+    int   GetRawImageHeight()     const { return m_rawImageH; }
+    float GetRawImageResolution() const { return kRawImageResolution; }
 
     // ========================================================================
     // 以下为 Voxel Occupancy Analysis（体素占据分析）新增接口
@@ -703,6 +748,37 @@ private:
     void ComputeClusterOBB(GridCluster& cluster) const;
 
     /**
+     * @brief Phase 3-B': 重置 / 分配 1cm Raw Point Image
+     *
+     * 在 BuildGrid() 中调用（此时 Grid 尺寸已确定）。
+     * 尺寸由配置 ROI 与 kRawImageResolution 现算，禁止硬编码。
+     * 图像内容 = ReclassifyPointCloud() 判为 obstacle 的点（不含地面点）。
+     */
+    void ResetRawPointImage();
+
+    /**
+     * @brief Phase 3-B': 将一个障碍物点栅格化到 1cm Raw Point Image
+     *
+     * 在 ReclassifyPointCloud() 既有点云循环内调用（复用既有遍历，不新增点云遍历）。
+     * 仅对该帧被判定为 obstacle 且落在配置 ROI 内的点写入像素。
+     */
+    void RasterizeRawPoint(float x, float y);
+
+    /**
+     * @brief Phase 3-B': Cluster → 1cm Image ROI → cv::minAreaRect 实验 OBB
+     *
+     * 流程（严格对应 Prompt）：
+     *   1. cluster.min_x/max_x/min_y/max_y（Grid cell 世界范围）→ 1cm 像素范围（padding = 0）
+     *   2. ROI 内收集全部非零像素（不做 findContours / 形态学 / 连通域选择）
+     *   3. points.size() < 2 → has_img_obb = false（唯一失败判据）
+     *   4. cv::minAreaRect → 4 顶点 → 项目 OBB 语义
+     *      （length >= width，yaw ∈ [0,π)，corners 左下→右下→右上→左上，C0→C1 = 长轴）
+     *
+     * ⚠ 只写 cluster.img_* 字段；cluster.obb_* / has_obb 完全不受影响。
+     */
+    void ComputeRawImageOBB(GridCluster& cluster) const;
+
+    /**
      * @brief 将 GridCluster 转换为 TrackedObstacle (SimpleTracker 输入格式)
      *
      * 映射关系:
@@ -749,6 +825,22 @@ private:
     // 原 roi_x_min 可能包含车身区域，effective_roi_x_min 排除了车身+外扩范围
     // Y 方向不受 body 影响，直接使用 roi_y_min / roi_y_max
     float m_effective_roi_x_min = 0.0f;
+
+    // ========================================================================
+    // Phase 3-B': 1cm Raw Point Image（实验：1cm Raw Point Image + Grid ROI + minAreaRect）
+    //
+    //   - 索引  : row * m_rawImageW + col，其中 row = +y(车左)，col = +x(前向)
+    //   - 原点  : (roi_x_min, roi_y_min)（未做车身盲区裁剪，与 Grid 的 eff_x_min 无关）
+    //   - 分辨率: kRawImageResolution = 1cm/pixel（定义在 public 区，供 DebugViewer 复用）
+    //   - ⚠ 与 Grid (0.1m/cell) 是两套独立网格，只能通过世界坐标互相换算，
+    //       严禁把 Grid 的 row/col 当作 Image 的 row/col 使用。
+    // ========================================================================
+
+    std::vector<uint8_t> m_rawPointImage;    // 0 / 255：像素是否被障碍物点占据
+    std::vector<uint8_t> m_rawPointCounter;  // 每像素障碍物点数（饱和 255），仅日志用
+    int m_rawImageW = 0;                     // = ceil((roi_x_max - roi_x_min) / 0.01)
+    int m_rawImageH = 0;                     // = ceil((roi_y_max - roi_y_min) / 0.01)
+    int m_rawImageFrame = 0;                 // 图像生成帧计数（仅用于 [RawImgOBB] 日志）
 
     // ---- OBB + Tracker 成员 ----
     std::unique_ptr<SimpleTracker> tracker_;           // 简易跟踪器 (贪心匹配 + ID管理)

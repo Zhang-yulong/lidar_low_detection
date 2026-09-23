@@ -220,6 +220,7 @@ struct SELF_DEBUG_CONFIG{
     DEBUG_VIEWER_CONFIG Overlay;             // 最终点云叠加图
     DEBUG_VIEWER_CONFIG TrackerOverlay;      // 第九层: 跟踪结果点云叠加图
     DEBUG_VIEWER_CONFIG HistoricalFeedback;  // 第十层: Historical Feedback 验证图（Current ∪ Historical → Fused）
+    DEBUG_VIEWER_CONFIG RawImageObb;         // 第十一层: 1cm Raw Point Image OBB A/B 对比图（Phase 3-B'）
 
     // ======== hdmap过滤 ========
     int mapFilterModel;

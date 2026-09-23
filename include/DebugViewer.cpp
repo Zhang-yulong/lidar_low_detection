@@ -2028,4 +2028,302 @@ void DebugViewer::DrawHistoricalFeedbackOverlay(
     ShowOrSave(image, "HistoricalFeedback", viewCfg);
 }
 
+// ============================================================================
+// 11. DrawRawPointImageObbDebug —— Phase 3-B' A/B 对比图
+// ============================================================================
+//
+// 本图只做 A/B 对比，不修改任何既有可视化窗口的颜色语义。
+//
+// 颜色约定：
+//   白  (255,255,255) 2px : 当前 Grid PCA OBB（cluster.obb_corners；!has_obb 回退 AABB）
+//   青  (220,220,0)   3px : 1cm Raw Point Image minAreaRect 实验 OBB（track.new_corners）
+//   品红 (255,0,255)  1px : 当前系统输出的 Track 框（track.corners，可能已含 Phase 3-B HISTORY yaw）
+//
+// 数据来源：outTracks（new_corners 只存在于该副本）+ outputClusters（PCA OBB / img_* 统计）
+// 坐标系：与 DrawMapAndAllOverlay 完全一致（WorldToPixel）
+// ============================================================================
+void DebugViewer::DrawRawPointImageObbDebug(const pcl::PointCloud<pcl::PointXYZI>& groundCloud,
+                                            const pcl::PointCloud<pcl::PointXYZI>& obstacleCloud,
+                                            const std::vector<uint8_t>& rawPointImage,
+                                            int rawImageW, int rawImageH,
+                                            const std::vector<TrackedObstacle>& tracks,
+                                            const std::vector<GridCluster>&    clusters,
+                                            const ElevationGridConfig&         gridCfg,
+                                            const std::vector<std::vector<STR_POINT2F>>& mapPolygons,
+                                            const LocalizationManager::Pose&   pose)
+{
+    const auto& viewCfg = m_DV_config.RawImageObb;
+    if (!viewCfg.enable) return;
+
+    // 与 1~10 层一致: 计算图像几何(含车前盲区偏移)与窗口宽高
+    int rows, cols, px_blind_offset, img_w, img_h;
+    ComputeGridImageGeometry(gridCfg, rows, cols, px_blind_offset, img_w, img_h);
+
+    cv::Mat image(img_h, img_w, CV_8UC3, cv::Scalar(20, 20, 20));
+    AddBackGround(image, img_w, img_h, gridCfg);
+
+    cv::rectangle(image,
+                  cv::Point(px_blind_offset + (expand_img_w / 2), (expand_img_h / 2)),
+                  cv::Point(px_blind_offset + cols * kGridPixelScale + (expand_img_w / 2) - 1,
+                            rows * kGridPixelScale + (expand_img_h / 2) - 1),
+                  cv::Scalar(80, 80, 80), 1);
+
+    const cv::Scalar kPcaColor(255, 255, 255);   // 白：Grid PCA OBB
+    const cv::Scalar kImgColor(220, 220, 0);     // 青：1cm Raw Point Image OBB
+    const cv::Scalar kTrkColor(255, 0, 255);     // 品红：当前系统 Track 框
+    const cv::Scalar kRoiColor(0, 165, 255);     // 橙：1cm ROI 框
+
+    // // ---- 绘制地面点（暗绿）：只作空间参考，亮度低于其他窗口，避免抢视觉 ----
+    // for (const auto& pt : groundCloud.points)
+    // {
+    //     if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) continue;
+    //     int px = 0, py = 0;
+    //     WorldToPixel(pt.x, pt.y, px, py, gridCfg);
+    //     if (px >= 0 && px < img_w && py >= 0 && py < img_h)
+    //     {
+    //         image.at<cv::Vec3b>(py, px) = cv::Vec3b(0, 120, 0);
+    //     }
+    // }
+
+    // ---- 障碍物点（暗红）：obstacle_cloud 逐点投影，仅作 ROI 外的空间参考 ----
+    // ⚠ ROI 内的真实占据已由下方“1cm 像素层”（红/黄）精确表示，这里用暗红避免抢视觉。
+    for (const auto& pt : obstacleCloud.points)
+    {
+        if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) continue;
+        int px = 0, py = 0;
+        WorldToPixel(pt.x, pt.y, px, py, gridCfg);
+        if (px >= 0 && px < img_w && py >= 0 && py < img_h)
+        {
+            image.at<cv::Vec3b>(py, px) = cv::Vec3b(0, 0, 90);
+        }
+    }
+
+    // ========================================================================
+    // 1cm 像素层（关键观察层）
+    //   黄 (0,255,255) : 膨胀新增的像素（只在 kRawImageDilateRadius > 0 时出现）
+    //   红 (0,0,220)   : 未膨胀的真实占用像素（Raw Point 在 1cm 格上的占据）
+    //
+    // 显示是 100px/m，算法是 1cm/pixel → 1 个算法像素 = 1 个显示像素，逐点绘制即可，
+    // 无需方块填充，且与点云 / ROI 框 / OBB 框严格对齐。
+    // 膨胀逻辑与 ElevationMapGroundFilter::ComputeRawImageOBB 完全一致（同一半径、
+    // 同一 "ROI + R 环" 局部缓冲），保证“看到的黄像素”就是参与拟合的那部分。
+    // ========================================================================
+    const float raw_res = ElevationMapGroundFilter::kRawImageResolution;
+    const int   raw_R   = ElevationMapGroundFilter::kRawImageDilateRadius;
+
+    auto raw_pixel_is_set = [&](int row, int col) -> bool {
+        if (rawPointImage.empty() || rawImageW <= 0 || rawImageH <= 0) return false;
+        if (row < 0 || row >= rawImageH || col < 0 || col >= rawImageW) return false;
+        return rawPointImage[static_cast<size_t>(row) * static_cast<size_t>(rawImageW) + col] != 0;
+    };
+
+    // 1cm 像素索引 → 该像素中心的显示像素（像素中心约定与算法侧一致）
+    auto draw_raw_pixel = [&](int row, int col, const cv::Vec3b& color) {
+        const float wx = gridCfg.roi_x_min + (static_cast<float>(col) + 0.5f) * raw_res;
+        const float wy = gridCfg.roi_y_min + (static_cast<float>(row) + 0.5f) * raw_res;
+        int px = 0, py = 0;
+        WorldToPixel(wx, wy, px, py, gridCfg);
+        if (px >= 0 && px < img_w && py >= 0 && py < img_h)
+        {
+            image.at<cv::Vec3b>(py, px) = color;
+        }
+    };
+
+    for (const auto& cl : clusters)
+    {
+        if (!cl.has_img_obb && cl.img_pixel_count <= 0) continue;
+
+        const int c0 = cl.img_roi_min_col, c1 = cl.img_roi_max_col;
+        const int r0 = cl.img_roi_min_row, r1 = cl.img_roi_max_row;
+        if (c1 < c0 || r1 < r0) continue;
+
+        // (a) 黄：膨胀新增像素（排除原始占用像素，它们留给下一步画红）
+        if (raw_R > 0)
+        {
+            const int lw = (c1 - c0 + 1) + 2 * raw_R;
+            const int lh = (r1 - r0 + 1) + 2 * raw_R;
+            std::vector<uint8_t> buf(static_cast<size_t>(lw) * static_cast<size_t>(lh), 0);
+
+            for (int r = r0; r <= r1; ++r)
+            {
+                for (int c = c0; c <= c1; ++c)
+                {
+                    if (!raw_pixel_is_set(r, c)) continue;
+                    const int lc = (c - c0) + raw_R;
+                    const int lr = (r - r0) + raw_R;
+                    for (int dr = -raw_R; dr <= raw_R; ++dr)
+                    {
+                        for (int dc = -raw_R; dc <= raw_R; ++dc)
+                        {
+                            buf[static_cast<size_t>(lr + dr) * lw + (lc + dc)] = 1;
+                        }
+                    }
+                }
+            }
+
+            for (int lr = 0; lr < lh; ++lr)
+            {
+                for (int lc = 0; lc < lw; ++lc)
+                {
+                    if (!buf[static_cast<size_t>(lr) * lw + lc]) continue;
+                    const int rr = lr - raw_R + r0;
+                    const int cc = lc - raw_R + c0;
+                    if (raw_pixel_is_set(rr, cc)) continue;   // 原始像素 → 留给红色
+                    draw_raw_pixel(rr, cc, cv::Vec3b(0, 255, 255));
+                }
+            }
+        }
+
+        // (b) 红：未膨胀的真实占用像素（最后画，保证可见）
+        for (int r = r0; r <= r1; ++r)
+        {
+            for (int c = c0; c <= c1; ++c)
+            {
+                if (raw_pixel_is_set(r, c))
+                {
+                    draw_raw_pixel(r, c, cv::Vec3b(0, 0, 220));
+                }
+            }
+        }
+    }
+
+    // ---- 绘制 1cm ROI 框（橙）：cluster 的 Grid cell 世界范围 → 1cm 像素范围 ----
+    // 与 ElevationMapGroundFilter::ComputeRawImageOBB 中的 ROI 定义严格一致：
+    //   world = roi_*_min + pixel_index * kRawImageResolution，右/上边界为 (max_index + 1)
+    // 仅在“该 cluster 确实扫描过 ROI”（img_pixel_count > 0 或 has_img_obb）时才画，
+    // 避免把未计算（默认全 0）的 cluster 画成一个 1cm 小方框。
+    for (const auto& cl : clusters)
+    {
+        if (!cl.has_img_obb && cl.img_pixel_count <= 0) continue;
+
+        const float wx0 = gridCfg.roi_x_min + static_cast<float>(cl.img_roi_min_col) * raw_res;
+        const float wx1 = gridCfg.roi_x_min + static_cast<float>(cl.img_roi_max_col + 1) * raw_res;
+        const float wy0 = gridCfg.roi_y_min + static_cast<float>(cl.img_roi_min_row) * raw_res;
+        const float wy1 = gridCfg.roi_y_min + static_cast<float>(cl.img_roi_max_row + 1) * raw_res;
+
+        int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+        WorldToPixel(wx0, wy0, x1, y1, gridCfg);
+        WorldToPixel(wx1, wy1, x2, y2, gridCfg);
+        cv::rectangle(image, cv::Rect(cv::Point(x1, y2), cv::Point(x2, y1)), kRoiColor, 1);
+    }
+    auto draw_poly = [&](const Point2D* c, const cv::Scalar& color, int thickness) {
+        std::vector<cv::Point> pts(4);
+        for (int j = 0; j < 4; ++j)
+        {
+            int px = 0, py = 0;
+            WorldToPixel(c[j].x, c[j].y, px, py, gridCfg);
+            pts[j] = cv::Point(px, py);
+        }
+        cv::polylines(image, pts, true, color, thickness);
+    };
+
+    // cluster_id → GridCluster
+    std::unordered_map<int, const GridCluster*> cluster_by_id;
+    cluster_by_id.reserve(clusters.size());
+    for (const auto& cl : clusters)
+    {
+        cluster_by_id[cl.id] = &cl;
+    }
+
+    for (size_t i = 0; i < tracks.size(); ++i)
+    {
+        const auto& t = tracks[i];
+
+        const GridCluster* cl = nullptr;
+        auto it = cluster_by_id.find(t.cluster_id);
+        if (it != cluster_by_id.end()) cl = it->second;
+
+        // ---- 白：当前 Grid PCA OBB（来自 cluster，而非 track.corners）----
+        // if (cl)
+        // {
+        //     if (cl->has_obb)
+        //     {
+        //         draw_poly(cl->obb_corners, kPcaColor, 2);
+        //     }
+        //     else
+        //     {
+        //         int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+        //         WorldToPixel(cl->min_x, cl->min_y, x1, y1, gridCfg);
+        //         WorldToPixel(cl->max_x, cl->max_y, x2, y2, gridCfg);
+        //         cv::rectangle(image, cv::Rect(cv::Point(x1, y2), cv::Point(x2, y1)), kPcaColor, 2);
+        //     }
+        // }
+
+        // // ---- 品红：当前系统输出的 Track 框 ----
+        // draw_poly(t.corners, kTrkColor, 1);
+
+        // ---- 青：1cm Raw Point Image 实验 OBB ----
+        bool drew_img = false;
+        if (t.has_new_corners)
+        {
+            draw_poly(t.new_corners, kImgColor, 1);
+            drew_img = true;
+        }
+        else if (cl != nullptr && cl->has_img_obb)
+        {
+            // 兜底：实验字段未挂到 Track（如 miss 帧）时，仍展示 Cluster 层结果
+            // draw_poly(cl->img_corners, kImgColor, 3);
+            // drew_img = true;
+        }
+
+        // ---- 中心点（黄）----
+        int cx = 0, cy = 0;
+        if (cl) WorldToPixel(cl->obb_center_x, cl->obb_center_y, cx, cy, gridCfg);
+        else    WorldToPixel(t.pos_x, t.pos_y, cx, cy, gridCfg);
+        // cv::circle(image, cv::Point(cx, cy), 4, cv::Scalar(0, 220, 220), -1);
+
+        // ---- 标签：Track ID / Cluster ID / cells / raw obstacle points / image pixels ----
+        char buf[256];
+        snprintf(buf, sizeof(buf), "T%d C%d cells=%zu RawPts=%d Px=%d PxD=%d dil=%d",
+                 t.id, t.cluster_id,
+                 cl ? cl->cell_indices.size() : static_cast<size_t>(0),
+                 cl ? cl->img_raw_pt_count : 0,
+                 cl ? cl->img_pixel_count : 0,
+                 cl ? cl->img_pixel_count_dilated : 0,
+                 ElevationMapGroundFilter::kRawImageDilateRadius);
+        cv::putText(image, buf, cv::Point(cx + 6, cy - 6),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(255, 255, 255), 1);
+
+        if (cl != nullptr && cl->has_img_obb)
+        {
+            float pca_yaw_deg = cl->obb_angle * 180.0f / static_cast<float>(M_PI);
+            if (pca_yaw_deg < 0.0f) pca_yaw_deg += 180.0f;
+            float img_yaw_deg = cl->img_yaw_rad * 180.0f / static_cast<float>(M_PI);
+            if (img_yaw_deg < 0.0f) img_yaw_deg += 180.0f;
+
+            snprintf(buf, sizeof(buf), "PCA y=%.1f L=%.2f W=%.2f",
+                     pca_yaw_deg, cl->obb_length, cl->obb_width);
+            // cv::putText(image, buf, cv::Point(cx + 6, cy + 8),
+            //             cv::FONT_HERSHEY_SIMPLEX, 0.32, kPcaColor, 1);
+
+            snprintf(buf, sizeof(buf), "IMG y=%.1f L=%.2f W=%.2f  px=%d->%d pts=%d%s",
+                     img_yaw_deg, cl->img_length, cl->img_width,
+                     cl->img_pixel_count, cl->img_pixel_count_dilated, cl->img_raw_pt_count,
+                     drew_img ? "" : " (cluster only)");
+            cv::putText(image, buf, cv::Point(cx + 6, cy + 22),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.32, kImgColor, 1);
+        }
+        else if (cl != nullptr)
+        {
+            snprintf(buf, sizeof(buf), "IMG has=0 (px=%d)", cl->img_pixel_count);
+            cv::putText(image, buf, cv::Point(cx + 6, cy + 8),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.32, kImgColor, 1);
+        }
+    }
+
+    if (pose.valid && !mapPolygons.empty())
+    {
+        DrawHdMapOverlay(image, mapPolygons, pose, gridCfg);
+    }
+
+    char title[256];
+    snprintf(title, sizeof(title),
+             "RawImageObb(1cm) Tracks:%zu Clusters:%zu | white=PCA cyan=IMG orange=ROI red=raw_px yellow=dil_px dimred=pts",
+             tracks.size(), clusters.size());
+    cv::putText(image, title, cv::Point(10, 20),
+                cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+
+    ShowOrSave(image, "RawImageObb", viewCfg);
+}
+
 }  // namespace Lidar_Low_Detection

@@ -187,6 +187,42 @@ public:
                      const LocalizationManager::Pose& pose);
 
     /**
+     * @brief Phase 3-B': 1cm Raw Point Image + Cluster Grid ROI + minAreaRect 实验 A/B 图
+     *
+     * 独立窗口（"RawImageObb"），不修改任何既有窗口的颜色语义：
+     *   - 1cm 像素（黄）: 膨胀新增的像素（kRawImageDilateRadius 邻域扩展出来的部分）
+     *   - 1cm 像素（红）: 【未膨胀】的真实占用像素（= Raw Point 在 1cm 格上的占据）
+     *   - 障碍物点（暗红）: obstacle_cloud 逐点投影，仅作 ROI 外的空间参考
+     *   - 1cm ROI 框 : 橙   (0,165,255) 1px（cluster 的 Grid cell 世界范围 → 1cm 像素范围）
+     *   - 白  (255,255,255) 2px : 当前 Grid PCA OBB（cluster.obb_corners；!has_obb 回退 AABB）
+     *   - 青  (220,220,0)   3px : 1cm Raw Point Image minAreaRect 实验 OBB（track.new_corners）
+     * 文字标签: T{track_id} C{cluster_id} cells RawPts Px PxD dil + 两套 L/W/yaw
+     *
+     * 显示分辨率 100px/m，算法分辨率 1cm/pixel → 1 个算法像素恰好 = 1 个显示像素，
+     * 因此像素层逐点绘制（不做方块填充），与点云、ROI 框均严格对齐。
+     *
+     * ⚠ 判断方法：橙框（1cm ROI）内的【红 + 黄】像素集合就是喂给 cv::minAreaRect 的全部点，
+     *   可直接目视判断青框是否真的包围了这些点。
+     *
+     * @param groundCloud    地面点云（仅作背景参考）
+     * @param obstacleCloud  障碍物点云（与 1cm Raw Point Image 同源）
+     * @param rawPointImage  1cm 二值图（0/255，与 GridCluster::img_roi_* 同一坐标）
+     * @param rawImageW      1cm 二值图宽（列数）
+     * @param rawImageH      1cm 二值图高（行数）
+     * @param tracks         输出层 Track 列表（含 Phase 3-B' 实验字段 new_corners）
+     * @param clusters       本帧 GridCluster（提供 PCA OBB、img_* 统计与 1cm ROI 范围）
+     */
+    void DrawRawPointImageObbDebug(const pcl::PointCloud<pcl::PointXYZI>& groundCloud,
+                                   const pcl::PointCloud<pcl::PointXYZI>& obstacleCloud,
+                                   const std::vector<uint8_t>& rawPointImage,
+                                   int rawImageW, int rawImageH,
+                                   const std::vector<TrackedObstacle>& tracks,
+                                   const std::vector<GridCluster>&    clusters,
+                                   const ElevationGridConfig&         gridCfg,
+                                   const std::vector<std::vector<STR_POINT2F>>& mapPolygons,
+                                   const LocalizationManager::Pose&   pose);
+
+    /**
      * @brief 10. Historical Feedback 验证图（Quick Validation）
      *        三层显示：
      *          Layer 1: Current Cluster cell（琥珀色 + C{id} 标签）

@@ -162,6 +162,16 @@ private:
                                  const LocalizationManager::Pose& pose,
                                  bool pose_valid,
                                  std::vector<TrackedObstacle>& outTracks);
+
+    // ---- Phase 3-B': 1cm Raw Point Image OBB（实验，仅 Debug 可视化）------------
+    // 把本帧【匹配成功】的 Track 对应 Cluster 的 img_corners 写入 outTracks 副本的
+    // 实验字段 TrackedObstacle::new_corners / has_new_corners。
+    // ⚠ 只写这两个实验字段：
+    //    - 不写 corners / depth / width / pos_*（现有输出 / UDP 语义完全不变）
+    //    - 不写 m_tracker.vtrackings（Tracker State 永远不含实验字段）
+    //    - 不写 detections（tracker 关联 / 速度 / ID 与 baseline 完全一致）
+    void AttachRawImageObbs(const std::vector<GridCluster>& clusters,
+                            std::vector<TrackedObstacle>& outTracks) const;
     VisFrameBuffer m_visBuffer;    // 帧缓冲：工作线程 → 主线程
 
     /* ---- 可视化成员已迁移至 main.cpp（注释保留） ----

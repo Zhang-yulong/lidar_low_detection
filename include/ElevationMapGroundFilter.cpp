@@ -22,6 +22,9 @@
 #include "ElevationMapGroundFilter.h"
 #include "DebugViewer.h"
 #include "ulog_api.h"
+// Phase 3-B': cv::minAreaRect（1cm Raw Point Image → 实验 OBB）。
+// 仅在 .cpp 中依赖 OpenCV，头文件仍然不依赖任何 OpenCV 类型。
+#include <opencv2/imgproc.hpp>
 namespace Lidar_Low_Detection
 {
 
@@ -181,6 +184,10 @@ bool ElevationMapGroundFilter::BuildGrid(const pcl::PointCloud<pcl::PointXYZI>& 
     // 预分配并初始化 Grid
     m_vGridCell.clear();
     m_vGridCell.resize(static_cast<size_t>(m_grid_rows) * m_grid_cols);
+
+    // ── Phase 3-B': 重置 1cm Raw Point Image（尺寸由配置 ROI 现算）──
+    // 放在 BuildGrid 内：与本帧 Grid 尺寸同时确定；图像内容在 ReclassifyPointCloud 中填充。
+    ResetRawPointImage();
 
     // std::cout << "Elevation Grid: " << m_grid_rows << " rows (y, ±" << m_elevationGridConfig.roi_y_max
     //           << "m) × " << m_grid_cols << " cols ("<< m_elevationGridConfig.roi_x_min <<", " << m_elevationGridConfig.roi_x_max
@@ -1857,6 +1864,16 @@ void ElevationMapGroundFilter::ReclassifyPointCloud(
     int obstacle_point_count = 0;
     int above_ground_in_ground_cell = 0;  // is_ground cell 中高于参考地面的点数（v3 新增统计）
 
+    // ── Phase 3-B': 障碍物点 → 1cm Raw Point Image ──────────────────────────
+    // 复用本函数已有的点云遍历（不新增一次 20w+ 点的遍历）：
+    // “凡是被判为 obstacle 的点（与 obstacle_cloud 完全同源）”就在 1cm 图像上写一个像素。
+    // 注意：地面点【不】写像素，否则 ROI 会被地面点填满，轮廓退化为 Grid 形状。
+    auto push_obstacle = [&](const pcl::PointXYZI& p) {
+        obstacle_cloud.push_back(p);
+        obstacle_point_count++;
+        RasterizeRawPoint(p.x, p.y);
+    };
+
     for (const auto& point : cloud.points)
     {
         if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
@@ -1866,8 +1883,7 @@ void ElevationMapGroundFilter::ReclassifyPointCloud(
         if (!WorldToGrid(point.x, point.y, row, col))
         {
             // 超出 ROI 的点默认归入障碍物
-            obstacle_cloud.push_back(point);
-            obstacle_point_count++;
+            push_obstacle(point);
             continue;
         }
 
@@ -1875,8 +1891,7 @@ void ElevationMapGroundFilter::ReclassifyPointCloud(
 
         if (!cell.valid)
         {
-            obstacle_cloud.push_back(point);
-            obstacle_point_count++;
+            push_obstacle(point);
             continue;
         }
 
@@ -1889,8 +1904,7 @@ void ElevationMapGroundFilter::ReclassifyPointCloud(
             // Ground Surface cell（纯地面 或 Mixed Ground Cell）
             if (point.z > cell.ground_reference_z + kGroundMargin)
             {
-                obstacle_cloud.push_back(point);
-                obstacle_point_count++;
+                push_obstacle(point);
                 above_ground_in_ground_cell++;
             }
             else
@@ -1902,14 +1916,12 @@ void ElevationMapGroundFilter::ReclassifyPointCloud(
         else if (cell.is_obstacle_candidate)
         {
             // 非地面障碍物候选（罕见：被障碍物完全覆盖、无地面点的 cell）
-            obstacle_cloud.push_back(point);
-            obstacle_point_count++;
+            push_obstacle(point);
         }
         else
         {
             // ── 既不是地面也不是障碍物候选（高大物体/孤立噪点） ──
-            obstacle_cloud.push_back(point);
-            obstacle_point_count++;
+            push_obstacle(point);
         }
     }
 
@@ -2047,6 +2059,11 @@ std::vector<GridCluster> ElevationMapGroundFilter::ClusterObstacleGrid()
             {
                 
                 GridCluster cluster = BuildClusterFromCells(cluster_id, cluster_cells);
+
+                // ── Phase 3-B': 1cm Raw Point Image → Cluster ROI → minAreaRect ──
+                // 只写 cluster.img_* 实验字段；cluster.obb_*（PCA）完全不受影响。
+                ComputeRawImageOBB(cluster);
+
                 clusters.push_back(cluster);
                 
                 // if( cluster.center_x <  m_effective_roi_x_min + 0.3) // 车身附近聚类过滤
@@ -2079,6 +2096,53 @@ std::vector<GridCluster> ElevationMapGroundFilter::ClusterObstacleGrid()
             clusters[i].cell_indices.size(), clusters[i].point_num);
         }
         
+    }
+
+    // ========================================================================
+    // Phase 3-B': A/B 日志（Grid PCA OBB vs 1cm Raw Point Image OBB）
+    //   yaw 统一打印为度：PCA 归一到 [0,180)，IMG 本身为 [0,180)
+    //   dYaw 为无向轴夹角（mod 180 后取最小值），禁止用 fabs 直接相减
+    // ========================================================================
+    for (size_t i = 0; i < clusters.size(); i++)
+    {
+        const GridCluster& cl = clusters[i];
+
+        // PCA yaw（[-π/2, π/2)）→ 度并归一到 [0,180)
+        float pca_yaw_deg = cl.obb_angle * 180.0f / static_cast<float>(M_PI);
+        if (pca_yaw_deg < 0.0f) pca_yaw_deg += 180.0f;
+
+        if (!cl.has_img_obb)
+        {
+            LOG_RAW("[RawImgOBB] frame=%d cluster=%d cells=%zu raw_pts=%d px=%d px_dil=%d roi=[c %d..%d][r %d..%d] "
+                    "| PCA: c=(%.2f,%.2f) L=%.2f W=%.2f yaw=%.1f | IMG: has=0 (pixels<2 or ROI empty)\n",
+                    m_rawImageFrame, cl.id, cl.cell_indices.size(), cl.img_raw_pt_count, cl.img_pixel_count,
+                    cl.img_pixel_count_dilated,
+                    cl.img_roi_min_col, cl.img_roi_max_col, cl.img_roi_min_row, cl.img_roi_max_row,
+                    cl.obb_center_x, cl.obb_center_y, cl.obb_length, cl.obb_width, pca_yaw_deg);
+            continue;
+        }
+
+        float img_yaw_deg = cl.img_yaw_rad * 180.0f / static_cast<float>(M_PI);
+        if (img_yaw_deg < 0.0f) img_yaw_deg += 180.0f;
+        if (img_yaw_deg >= 180.0f) img_yaw_deg -= 180.0f;
+
+        // 无向轴夹角：Δ ∈ [-90, 90]，取绝对值后与 (180-|Δ|) 比较取小
+        float d = img_yaw_deg - pca_yaw_deg;
+        while (d <= -90.0f) d += 180.0f;
+        while (d >    90.0f) d -= 180.0f;
+        const float d_yaw = std::fabs(d);
+
+        LOG_RAW("[RawImgOBB] frame=%d cluster=%d cells=%zu raw_pts=%d px=%d px_dil=%d roi=[c %d..%d][r %d..%d] "
+                "| PCA: c=(%.2f,%.2f) L=%.2f W=%.2f yaw=%.1f | IMG: c=(%.2f,%.2f) L=%.2f W=%.2f yaw=%.1f has=1 "
+                "| dYaw=%.1f dL=%.2f dW=%.2f\n",
+                m_rawImageFrame, cl.id, cl.cell_indices.size(), cl.img_raw_pt_count, cl.img_pixel_count,
+                cl.img_pixel_count_dilated,
+                cl.img_roi_min_col, cl.img_roi_max_col, cl.img_roi_min_row, cl.img_roi_max_row,
+                cl.obb_center_x, cl.obb_center_y, cl.obb_length, cl.obb_width, pca_yaw_deg,
+                cl.img_center_x, cl.img_center_y, cl.img_length, cl.img_width, img_yaw_deg,
+                d_yaw,
+                cl.img_length - cl.obb_length,
+                cl.img_width  - cl.obb_width);
     }
 
     
@@ -2340,6 +2404,258 @@ void ElevationMapGroundFilter::ConvertTrackToS2ObstacleBox(
 
 
 // ============================================================================
+// 十三-B、Phase 3-B': 1cm Raw Point Image（分配 / 栅格化 / Cluster ROI → minAreaRect）
+// ============================================================================
+//
+// 设计约束（严格对应 Phase 3-B' Prompt）：
+//   1. 图像内容 = ReclassifyPointCloud() 判为 obstacle 的点（与 obstacle_cloud 同源）。
+//      若改用 BuildGrid 阶段的全部原始点，ROI 会被地面点填满，轮廓退化为 Grid 形状。
+//   2. 点云遍历不新增：栅格化挂在 ReclassifyPointCloud() 已有的点云循环里。
+//   3. Cluster 不再重新找点云：只扫自己的 1cm Image ROI（O(ROI 面积)）。
+//   4. 不使用 findContours / morphology / 连通域选择 / 历史信息。
+//   5. 只写 GridCluster.img_* 实验字段；PCA OBB / tracker / detections / UDP 全不受影响。
+//
+// 坐标系（与 Grid 是两套独立网格，只能通过世界坐标换算）：
+//   col = floor((x - roi_x_min) / 0.01)      row = floor((y - roi_y_min) / 0.01)
+//   像素 (col,row) 的世界代表点 = (roi_x_min + (col+0.5)*0.01, roi_y_min + (row+0.5)*0.01)
+
+void ElevationMapGroundFilter::ResetRawPointImage()
+{
+    const float inv = 1.0f / kRawImageResolution;
+
+    // 尺寸由配置 ROI 现算（不硬编码：不同车辆配置的 roi_* 不同）
+    m_rawImageW = static_cast<int>(std::ceil(
+        (m_elevationGridConfig.roi_x_max - m_elevationGridConfig.roi_x_min) * inv));
+    m_rawImageH = static_cast<int>(std::ceil(
+        (m_elevationGridConfig.roi_y_max - m_elevationGridConfig.roi_y_min) * inv));
+
+    if (m_rawImageW <= 0 || m_rawImageH <= 0)
+    {
+        m_rawImageW = 0;
+        m_rawImageH = 0;
+        m_rawPointImage.clear();
+        m_rawPointCounter.clear();
+        return;
+    }
+
+    // assign：尺寸不变时复用已分配的容量（不会每帧重新 malloc）
+    const size_t total = static_cast<size_t>(m_rawImageW) * static_cast<size_t>(m_rawImageH);
+    m_rawPointImage.assign(total, 0);
+    m_rawPointCounter.assign(total, 0);
+    ++m_rawImageFrame;
+
+    LOG_RAW("[RawImg] frame=%d reset 1cm RawPointImage: %d x %d (%.3fm/pixel), origin=(%.2f, %.2f), buf=%zu B x2\n",
+            m_rawImageFrame, m_rawImageW, m_rawImageH, kRawImageResolution,
+            m_elevationGridConfig.roi_x_min, m_elevationGridConfig.roi_y_min, total);
+}
+
+void ElevationMapGroundFilter::RasterizeRawPoint(float x, float y)
+{
+    if (m_rawImageW <= 0 || m_rawImageH <= 0) return;
+    if (!std::isfinite(x) || !std::isfinite(y)) return;
+
+    const float inv = 1.0f / kRawImageResolution;
+    const int col = static_cast<int>(std::floor((x - m_elevationGridConfig.roi_x_min) * inv));
+    const int row = static_cast<int>(std::floor((y - m_elevationGridConfig.roi_y_min) * inv));
+
+    // ROI 外的点（如 x >= roi_x_max）没有像素：它们仍会进入 obstacle_cloud，
+    // 但对 1cm 图像不可见 —— 只有 ROI 边缘的 cluster 会受影响。
+    if (col < 0 || col >= m_rawImageW || row < 0 || row >= m_rawImageH) return;
+
+    const size_t k = static_cast<size_t>(row) * m_rawImageW + col;
+    m_rawPointImage[k] = 255;
+    if (m_rawPointCounter[k] < 255)
+    {
+        ++m_rawPointCounter[k];
+    }
+}
+
+void ElevationMapGroundFilter::ComputeRawImageOBB(GridCluster& cluster) const
+{
+    // 实验字段默认无效（无论成败都不影响 cluster.obb_* / has_obb）
+    cluster.has_img_obb      = false;
+    cluster.img_pixel_count  = 0;
+    cluster.img_pixel_count_dilated = 0;
+    cluster.img_raw_pt_count = 0;
+
+    if (m_rawImageW <= 0 || m_rawImageH <= 0) return;
+
+    const float res     = kRawImageResolution;
+    const float inv_res = 1.0f / res;
+
+    // ── Step 1: Cluster 的 Grid cell 世界范围（BuildClusterFromCells 已含 ±半格）→ 1cm ROI ──
+    // padding = 0：只取 Grid cell 覆盖范围，不做任何额外空间扩展。
+    // 端点用 floor 取像素下标，数学上等价于“边界像素包含”，额外包含量 ≤ 1cm。
+    int c0 = static_cast<int>(std::floor((cluster.min_x - m_elevationGridConfig.roi_x_min) * inv_res));
+    int c1 = static_cast<int>(std::floor((cluster.max_x - m_elevationGridConfig.roi_x_min) * inv_res));
+    int r0 = static_cast<int>(std::floor((cluster.min_y - m_elevationGridConfig.roi_y_min) * inv_res));
+    int r1 = static_cast<int>(std::floor((cluster.max_y - m_elevationGridConfig.roi_y_min) * inv_res));
+
+    if (c1 < 0 || r1 < 0) return;                                   // ROI 在图像之外
+    c0 = std::max(0, c0); r0 = std::max(0, r0);                     // 夹到图像边界
+    c1 = std::min(m_rawImageW - 1, c1);
+    r1 = std::min(m_rawImageH - 1, r1);
+    if (c0 > c1 || r0 > r1) return;
+
+    cluster.img_roi_min_col = c0;
+    cluster.img_roi_max_col = c1;
+    cluster.img_roi_min_row = r0;
+    cluster.img_roi_max_row = r1;
+
+    // ── Step 2: ROI 内收集全部非零像素（不做 findContours / morphology 二值图运算）──
+    std::vector<cv::Point> pts;                       // 真实占用像素（图像像素坐标）
+    pts.reserve(static_cast<size_t>(c1 - c0 + 1) * static_cast<size_t>(r1 - r0 + 1));
+
+    int raw_pt_count = 0;
+    for (int r = r0; r <= r1; ++r)
+    {
+        const uint8_t* img_row = m_rawPointImage.data() + static_cast<size_t>(r) * m_rawImageW;
+        const uint8_t* cnt_row = (m_rawPointCounter.size() == m_rawPointImage.size())
+                               ? (m_rawPointCounter.data() + static_cast<size_t>(r) * m_rawImageW)
+                               : nullptr;
+        for (int c = c0; c <= c1; ++c)
+        {
+            if (img_row[c])
+            {
+                pts.emplace_back(c, r);          // 像素坐标 (col, row)
+                if (cnt_row) raw_pt_count += cnt_row[c];
+            }
+        }
+    }
+    cluster.img_pixel_count  = static_cast<int>(pts.size());
+    cluster.img_raw_pt_count = raw_pt_count;
+
+    // ── Step 3: 唯一失败判据（在膨胀之前判断：单点被膨胀后成为方块，yaw 无意义）──
+    if (pts.size() < 2) return;
+
+    // ── Step 3.5: Phase 3-B' 实验：ROI 内像素膨胀 ──────────────────────────────
+    // 低矮目标单帧原始点常常只有几个（3~8 个），minAreaRect 对“少一两个极值点”极敏感
+    // → yaw / L / W 逐帧抖动。先对占用像素做 Chebyshev 半径 R 的膨胀，提高拟合点集密度。
+    //   - kRawImageDilateRadius = 0   → 关闭（等价于原始点集）
+    //   - kRawImageDilateYawOnly=true → 只用膨胀集定方向，L/W/中心用原始像素重投影（不放大尺寸）
+    //   - kRawImageDilateYawOnly=false→ 全部量都用膨胀集（L/W 各向同性放大 2*R*1cm）
+    const int R = kRawImageDilateRadius;
+    std::vector<cv::Point> pts_fit;
+    if (R > 0)
+    {
+        // 在 "ROI + R 环" 的局部缓冲内膨胀，避免为每个 cluster 分配整幅图像
+        const int lw = (c1 - c0 + 1) + 2 * R;   // 局部宽（列）
+        const int lh = (r1 - r0 + 1) + 2 * R;   // 局部高（行）
+        std::vector<uint8_t> buf(static_cast<size_t>(lw) * static_cast<size_t>(lh), 0);
+
+        for (const auto& p : pts)
+        {
+            const int lc = (p.x - c0) + R;
+            const int lr = (p.y - r0) + R;
+            for (int dr = -R; dr <= R; ++dr)
+            {
+                for (int dc = -R; dc <= R; ++dc)
+                {
+                    buf[static_cast<size_t>(lr + dr) * lw + (lc + dc)] = 1;
+                }
+            }
+        }
+
+        pts_fit.reserve(static_cast<size_t>(lw) * static_cast<size_t>(lh));
+        for (int lr = 0; lr < lh; ++lr)
+        {
+            for (int lc = 0; lc < lw; ++lc)
+            {
+                if (buf[static_cast<size_t>(lr) * lw + lc])
+                {
+                    // 局部 → 图像像素坐标：最多超出原 ROI 边界 R=1cm，世界坐标仍然良定义
+                    pts_fit.emplace_back(lc - R + c0, lr - R + r0);
+                }
+            }
+        }
+    }
+    else
+    {
+        pts_fit = pts;
+    }
+    cluster.img_pixel_count_dilated = static_cast<int>(pts_fit.size());
+
+    // ── Step 4: minAreaRect（OpenCV 3.3：不读 RotatedRect::angle，只用 4 顶点几何）──
+    const cv::RotatedRect rr = cv::minAreaRect(pts_fit);
+    cv::Point2f v[4];
+    rr.points(v);
+
+    // 像素 → 世界（像素中心约定，与 RasterizeRawPoint 的 floor 成对）
+    Eigen::Vector2f P[4];
+    for (int i = 0; i < 4; ++i)
+    {
+        P[i] = Eigen::Vector2f(m_elevationGridConfig.roi_x_min + (v[i].x + 0.5f) * res,
+                               m_elevationGridConfig.roi_y_min + (v[i].y + 0.5f) * res);
+    }
+
+    // (1) 两条相邻边中较长者为长轴 u
+    const Eigen::Vector2f e0 = P[1] - P[0];
+    const Eigen::Vector2f e1 = P[2] - P[1];
+    const float n0 = e0.norm();
+    const float n1 = e1.norm();
+    Eigen::Vector2f u = (n0 >= n1) ? e0 : e1;
+    float L  = std::max(n0, n1);   // 长轴长度
+    float Wd = std::min(n0, n1);   // 短轴长度
+    if (L <= 1e-6f) return;              // 退化保护（正常不会到这里）
+    u /= L;
+
+    // (2) yaw ∈ [0, π)：把 u 统一到上半平面
+    if (u.y() < 0.0f || (u.y() == 0.0f && u.x() < 0.0f))
+    {
+        u = -u;
+    }
+    const float yaw = std::atan2(u.y(), u.x());
+
+    // (3) 右手正交副轴 v = rot90(u)
+    const Eigen::Vector2f v_axis(-u.y(), u.x());
+
+    // (4) 中心 = 4 顶点均值（膨胀集的中心）
+    Eigen::Vector2f center = (P[0] + P[1] + P[2] + P[3]) * 0.25f;
+
+    // (4.5) 可选：只用膨胀集定方向，尺寸/中心用【原始像素】在该方向上重投影
+    //       （u 的正负号不影响 span；中心偏移与 u 同号翻转，故结果与归一化顺序无关）
+    if (R > 0 && kRawImageDilateYawOnly)
+    {
+        float mn_u = FLT_MAX, mx_u = -FLT_MAX, mn_v = FLT_MAX, mx_v = -FLT_MAX;
+        for (const auto& p : pts)
+        {
+            const Eigen::Vector2f pw(m_elevationGridConfig.roi_x_min + (p.x + 0.5f) * res,
+                                     m_elevationGridConfig.roi_y_min + (p.y + 0.5f) * res);
+            const Eigen::Vector2f d = pw - center;
+            const float pu = d.dot(u);
+            const float pv = d.dot(v_axis);
+            mn_u = std::min(mn_u, pu); mx_u = std::max(mx_u, pu);
+            mn_v = std::min(mn_v, pv); mx_v = std::max(mx_v, pv);
+        }
+        if (mx_u > mn_u)
+        {
+            center = center + u * (0.5f * (mn_u + mx_u)) + v_axis * (0.5f * (mn_v + mx_v));
+            L  = mx_u - mn_u;
+            Wd = mx_v - mn_v;    // 原始点共线时可为 0（已知退化，日志可见）
+        }
+    }
+
+    // (5) corners：左下→右下→右上→左上（与 ComputeClusterOBB 完全同序，C0→C1 = 长轴）
+    const float hl = L  * 0.5f;
+    const float hw = Wd * 0.5f;
+    const Eigen::Vector2f C0 = center - hl * u - hw * v_axis;
+    const Eigen::Vector2f C1 = center + hl * u - hw * v_axis;
+    const Eigen::Vector2f C2 = center + hl * u + hw * v_axis;
+    const Eigen::Vector2f C3 = center - hl * u + hw * v_axis;
+
+    cluster.img_corners[0] = { C0.x(), C0.y() };
+    cluster.img_corners[1] = { C1.x(), C1.y() };
+    cluster.img_corners[2] = { C2.x(), C2.y() };
+    cluster.img_corners[3] = { C3.x(), C3.y() };
+    cluster.img_center_x = center.x();
+    cluster.img_center_y = center.y();
+    cluster.img_length   = L;
+    cluster.img_width    = Wd;
+    cluster.img_yaw_rad  = yaw;          // [0, π)
+    cluster.has_img_obb  = true;
+}
+
+// ============================================================================
 // 十四、ComputeClusterOBB —— 2D PCA 计算有向包围盒
 // ============================================================================
 
@@ -2493,7 +2809,7 @@ void ElevationMapGroundFilter::ComputeClusterOBB(GridCluster& cluster) const
         // );
     }
 
-    printf("\n");
+    // printf("\n");
 
 
     // ── Step 5: 投影求 OBB 尺寸 ──

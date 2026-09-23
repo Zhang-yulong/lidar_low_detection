@@ -1094,6 +1094,11 @@ void SutengDriver::ProcessPcapCloud(){
         std::vector<TrackedObstacle> outTracks;
         RefineStaticObbGeometry(outputClusters, loc_pose, have_pose, outTracks);
 
+        // ── Phase 3-B': 1cm Raw Point Image OBB（实验，仅 Debug 可视化）─────────────
+        // 把本帧匹配到的 Cluster 的 1cm Raw Point Image minAreaRect 结果写入 outTracks 的
+        // 实验字段 new_corners；不改变任何现有输出（corners/depth/width/tracker/UDP 全不动）。
+        AttachRawImageObbs(outputClusters, outTracks);
+
         // ── Historical Feedback（Phase 2/3 Quick Validation，实验性）──────────────────
         // 只产生 Debug 证据（投影到当前 Grid 的空间先验 + Fused 统计），
         // 不修改 detections / tracker 输入 / 最终 UDP 输出。
@@ -1141,6 +1146,18 @@ void SutengDriver::ProcessPcapCloud(){
                                            m_pElevationMapGroundFilter->GetConfig(),
                                            hdmap_polygons,
                                            loc_pose);
+
+                // ── Phase 3-B': 1cm Raw Point Image OBB A/B 对比图（独立窗口 RawImageObb）──
+                // 白 = Grid PCA OBB, 青 = 1cm Raw Point Image OBB, 橙 = 1cm ROI,
+                // 红 = 原始占用像素, 黄 = 膨胀新增像素, 暗红 = 障碍物点云（空间参考）
+                m_debugViewer->DrawRawPointImageObbDebug(*pGroundCloud, *pObstacleCloud,
+                                                       m_pElevationMapGroundFilter->GetRawPointImage(),
+                                                       m_pElevationMapGroundFilter->GetRawImageWidth(),
+                                                       m_pElevationMapGroundFilter->GetRawImageHeight(),
+                                                       outTracks, outputClusters,
+                                                       m_pElevationMapGroundFilter->GetConfig(),
+                                                       hdmap_polygons,
+                                                       loc_pose);
             // }
             // else
             // {
@@ -1272,6 +1289,16 @@ void SutengDriver::UpdateMapAnchors(const LocalizationManager::Pose& pose, bool 
         else
         {
             // miss：冻结锚点，仅同步 lastSeen（供调试观察生命周期）
+            // 为什么这里【不需要】像雷达系那样做 miss 重投影：
+            //   - 本函数存的是【地图系】anchor(map_x/map_y/map_corners)，地图系不随自车运动，
+            //     静止目标在地图系里本来就不动 → “不更新”就是正确值，freeze = 正确语义。
+            //     （雷达系之所以要重投影，是因为雷达系本身跟着自车动，
+            //       沿用上一帧的雷达系坐标 = 目标跟着车跑，这是两码事。）
+            //   - 调用顺序：UpdateTrackMotionStates()（雷达系 miss 重投影，只改 vtrackings 的
+            //     pos/corners/vx/vy）→ UpdateMapAnchors()（本函数）。miss 帧这里只写 lastSeen、
+            //     不读 vtrackings 的几何，所以两者互不干扰，锚点不会被重投影结果污染。
+            //   - 运动目标的地图系 coast（anchor += map_v*dt）属 Phase 3-C 范围，本阶段不做：
+            //     宁可让历史先验滞后，也不伪造运动（ComputeHistoricalFeedback 只做投影，不做外推）。
             anchor->lastSeen = t.lastSeen;
         }
     }
@@ -2200,6 +2227,96 @@ void SutengDriver::Stop()
 // ============================================================================
 // GridCluster → TrackedObstacle 转换（供 tracker 使用）
 // ============================================================================
+// ============================================================================
+// Phase 3-B': 1cm Raw Point Image OBB → outTracks 实验字段（仅 Debug 可视化）
+// ============================================================================
+//
+// 数据流：
+//   GridCluster.img_corners（本帧 1cm Raw Point Image ROI → minAreaRect）
+//        │  经 cluster_id 关联（SimpleTracker matched 分支已写回 cluster_id）
+//        ▼
+//   outTracks[i].new_corners / has_new_corners
+//        │
+//        ▼
+//   DebugViewer::DrawRawPointImageObbDebug（青框）
+//
+// 严格约束：
+//   - 只写 new_corners / has_new_corners
+//   - 不写 corners / depth / width / pos_*（现有输出与 UDP 语义完全不变）
+//   - 不写 m_tracker.vtrackings（Tracker State 永远不含实验字段）
+//   - 不写 detections（tracker 关联 / 速度 / ID 与 baseline 完全一致）
+void SutengDriver::AttachRawImageObbs(const std::vector<GridCluster>& clusters,
+                                      std::vector<TrackedObstacle>& outTracks) const
+{
+    // cluster_id → GridCluster（cluster.id 为帧内唯一编号）
+    std::unordered_map<int, const GridCluster*> cluster_by_id;
+    cluster_by_id.reserve(clusters.size());
+    for (const auto& cl : clusters)
+    {
+        cluster_by_id[cl.id] = &cl;
+    }
+
+    int n_ok = 0, n_miss = 0, n_no_cluster = 0, n_no_img_obb = 0;
+
+    for (auto& t : outTracks)
+    {
+        t.has_new_corners = false;
+
+        // 只处理本帧【匹配成功】的 Track：miss 帧的 cluster_id 指向历史帧的 cluster，
+        // 不在本帧 clusters 集合里 → 自然跳过（不做漏检帧预测，属 Phase 3-C）
+        if (t.lastSeen != 0)
+        {
+            n_miss++;
+            continue;
+        }
+
+        auto it = cluster_by_id.find(t.cluster_id);
+        if (it == cluster_by_id.end())
+        {
+            n_no_cluster++;
+            continue;
+        }
+
+        const GridCluster& cl = *it->second;
+        if (!cl.has_img_obb)
+        {
+            n_no_img_obb++;
+            continue;
+        }
+
+        for (int j = 0; j < 4; ++j)
+        {
+            t.new_corners[j] = cl.img_corners[j];
+        }
+        t.has_new_corners = true;
+        ++n_ok;
+
+        // ── A/B 逐 Track 日志（yaw 均为 [0,180)；dYaw 为无向轴夹角 mod 180）──
+        float pca_yaw_deg = cl.obb_angle * 180.0f / static_cast<float>(M_PI);
+        if (pca_yaw_deg < 0.0f) pca_yaw_deg += 180.0f;
+
+        float img_yaw_deg = cl.img_yaw_rad * 180.0f / static_cast<float>(M_PI);
+        if (img_yaw_deg < 0.0f) img_yaw_deg += 180.0f;
+
+        float d = img_yaw_deg - pca_yaw_deg;
+        while (d <= -90.0f) d += 180.0f;
+        while (d >    90.0f) d -= 180.0f;
+
+        LOG_RAW("[RawImgOBB-Track] track=%d cluster=%d cells=%zu RawPts=%d Px=%d PxD=%d "
+                "| PCA: c=(%.2f,%.2f) L=%.2f W=%.2f yaw=%.1f "
+                "| IMG: c=(%.2f,%.2f) L=%.2f W=%.2f yaw=%.1f | dYaw=%.1f dL=%.2f dW=%.2f\n",
+                t.id, t.cluster_id, cl.cell_indices.size(), cl.img_raw_pt_count, cl.img_pixel_count,
+                cl.img_pixel_count_dilated,
+                cl.obb_center_x, cl.obb_center_y, cl.obb_length, cl.obb_width, pca_yaw_deg,
+                cl.img_center_x, cl.img_center_y, cl.img_length, cl.img_width, img_yaw_deg,
+                std::fabs(d), cl.img_length - cl.obb_length, cl.img_width - cl.obb_width);
+    }
+
+    LOG_RAW("[RawImgOBB-Track-Sum] outTracks=%zu ok=%d skip=miss(%d)/no_cluster(%d)/no_img_obb(%d)\n",
+            outTracks.size(), n_ok, n_miss, n_no_cluster, n_no_img_obb);
+}
+
+
 void SutengDriver::ConvertClustersToTrackedObstacles(
     const std::vector<GridCluster>& clusters,
     std::vector<TrackedObstacle>& out) const

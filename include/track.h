@@ -91,6 +91,16 @@ struct TrackedObstacle {
     std::vector<Point2D> recent_map_positions; ///< 最近 kMotionHistoryCap 个有效 matched map position
 
     //==================
+    // Phase 3-B' 实验字段：1cm Raw Point Image + Grid ROI + minAreaRect 得到的 OBB
+    //   ⚠ 仅用于 Debug 可视化 A/B 对比：不参与任何算法决策
+    //   （不写 detections、不影响 tracker 关联/速度/motion_state、不进 UDP）
+    //   数据来源：GridCluster.img_corners（见 ElevationMapGroundFilter::ComputeRawImageOBB）
+    //   必须与下方【拷贝构造 / 拷贝赋值】同步，否则 outTracks 副本会丢字段
+    //==================
+    Point2D new_corners[4] = {};        // 左下→右下→右上→左上，C0→C1 = 长轴
+    bool    has_new_corners = false;    // 实验 OBB 是否有效
+
+    //==================
     // DrawMapAndAllOverlay函数可视化用，有些(may丢失）,需要根据当前帧定位更新位置
     //==================
     bool current_exist = true;
@@ -144,6 +154,10 @@ struct TrackedObstacle {
         motion_static_run = other.motion_static_run;
         motion_moving_run = other.motion_moving_run;
         recent_map_positions = other.recent_map_positions;
+
+        // Phase 3-B': 1cm Raw Point Image 实验字段必须同步拷贝
+        has_new_corners = other.has_new_corners;
+        for (int i = 0; i < 4; i++) new_corners[i] = other.new_corners[i];
 
         // 2. 深拷贝 unique_ptr 成员
         if (other.kf) {
@@ -200,6 +214,10 @@ struct TrackedObstacle {
         motion_static_run = other.motion_static_run;
         motion_moving_run = other.motion_moving_run;
         recent_map_positions = other.recent_map_positions;
+
+        // Phase 3-B': 1cm Raw Point Image 实验字段必须同步拷贝
+        has_new_corners = other.has_new_corners;
+        for (int i = 0; i < 4; i++) new_corners[i] = other.new_corners[i];
 
         // 3. 深拷贝 unique_ptr 成员
         if (other.kf) {
