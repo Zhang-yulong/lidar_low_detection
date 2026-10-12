@@ -295,6 +295,7 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 			//       会覆盖本处的外推结果（与 DebugViewer::DrawMapAndAllOverlay 同源）。
 			track.lastSeen++;
             track.current_exist =false;
+            track.detection_source = DetectionSource::NORMAL_MISS;
 		}
 		// 添加删除长时间未出现的目标
 		removeLongLostTargets();
@@ -423,7 +424,13 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 			vtrackings[i].cluster_id = detections[best_det_idx].cluster_id;
 
             vtrackings[i].current_exist = true;
-			
+
+            // Local Missing Target Recheck：本帧是正常 detection（Cluster → 关联匹配成功）→ 显式回到 NORMAL，
+            // 否则上一帧被 Recheck 恢复成 RECOVERED 的 Track 会一直停留在 RECOVERED。
+            // 注意：normal_occupied_cells（Recheck 的稳定性参考基准）不在这里写，
+            //       因为它需要本帧 Cluster 的 cell 数，由 SuTengDriver::RecordNormalDetectionHistory() 更新。
+            vtrackings[i].detection_source = DetectionSource::NORMAL;
+
 			LOG_RAW(" [与%d匹配上] 当前跟踪id = %d，distance = %.3f\n", detections[best_det_idx].cluster_id, vtrackings[i].id, cost_matrix[i][best_det_idx]);
 			// LOG_RAW(" [与%d匹配] Track id = %d，distance = %.3f，Center(%.2f, %.2f, %.2f)，age=%d\n", 
 			// 	detections[best_det_idx].cluster_id, vtrackings[i].id, cost_matrix[i][best_det_idx],
@@ -435,6 +442,7 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 			// 未匹配上：目标可能暂时消失了
 			vtrackings[i].lastSeen++;
             vtrackings[i].current_exist = false;
+            vtrackings[i].detection_source = DetectionSource::NORMAL_MISS;
 			LOG_RAW("may丢失, id = %d, loss_count = %d \n", vtrackings[i].id, vtrackings[i].lastSeen);
             
         }
@@ -460,6 +468,8 @@ void SimpleTracker::update(const std::vector<TrackedObstacle>& detections, const
 			new_track.id = nextTrackID++;
 			new_track.age = 0;
 			new_track.lastSeen = 0;
+			// Local Missing Target Recheck：新 Track 必然来自正常 detection
+			new_track.detection_source = DetectionSource::NORMAL;
 			vtrackings.push_back(new_track);
 			LOG_RAW("(待定)new_track id = %d, age =%d; [%.3f, %.3f, %.3f]\n", new_track.id, new_track.age,
 				new_track.pos_x, new_track.pos_y, new_track.pos_z);
@@ -494,8 +504,15 @@ void SimpleTracker::removeLongLostTargets(){
 // 移除 lastSeen > 10 的目标（例如：连续10帧没看到就删掉）
 	auto it = std::remove_if(vtrackings.begin(), vtrackings.end(),
 		[](const TrackedObstacle& t) { 
-			return t.lastSeen > 10; 
-			// return t.lastSeen == 1; 
+			
+            // STATIC 目标容忍度更高，需要连续丢失超过 20 帧才移除
+            if(t.motion_state == MotionState::STATIC){
+                return t.lastSeen > 20;
+            }
+            
+            // 其他状态（UNKNOWN / MOVING）保持原有阈值
+            return t.lastSeen > 10; 
+			// // return t.lastSeen == 1; 
 		}
 	);
 	vtrackings.erase(it, vtrackings.end());

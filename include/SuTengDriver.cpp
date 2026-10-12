@@ -1088,16 +1088,27 @@ void SutengDriver::ProcessPcapCloud(){
             UpdateMapAnchors(loc_pose, have_pose);
         }
 
+        // ── Local Missing Target Recheck（第一版，STATIC only）────────────────────
+        // 位置（必须）：UpdateMapAnchors() 之后、RefineStaticObbGeometry() 之前。
+        //   - 在 UpdateTrackMotionStates() 之后：miss Track 的 pos_x/pos_y 已是
+        //     "地图锚点 → 当前帧雷达系"的预测位置，直接作为 3×3 ROI 中心
+        //   - 在 UpdateMapAnchors() 之后：该函数原有的 miss 语义（冻结锚点）完全不变
+        //   - 在 RefineStaticObbGeometry() 之前：RECOVERED 的 current_exist=true 能被
+        //     outTracks 快照带到 Debug / visBuffer / UDP
+        // 只做 “已有 STATIC Track 的存在性恢复”：不重跑 tracker、不动 lastSeen、
+        // 不重算 OBB、不改 map anchor、不写 outputClusters。
+        RunLocalMissingTargetRecheck(*pFilteredPointCloud, outputClusters, have_pose);
+
         // ── Phase 3-B (v2): STATIC Track OBB Geometry Refinement ─────────────────
         // 只读 m_tracker.vtrackings（RAW）；结果写入 outTracks（RAW 快照副本），供 Debug/可视化/UDP 使用。
         // ⚠ 不写回 m_tracker：Tracker State 永远保持 RAW（association / 速度 / age / lastSeen / motion_state 不受影响）。
         std::vector<TrackedObstacle> outTracks;
         RefineStaticObbGeometry(outputClusters, loc_pose, have_pose, outTracks);
 
-        // ── Phase 3-B': 1cm Raw Point Image OBB（实验，仅 Debug 可视化）─────────────
-        // 把本帧匹配到的 Cluster 的 1cm Raw Point Image minAreaRect 结果写入 outTracks 的
-        // 实验字段 new_corners；不改变任何现有输出（corners/depth/width/tracker/UDP 全不动）。
-        AttachRawImageObbs(outputClusters, outTracks);
+        // // ── Phase 3-B': 1cm Raw Point Image OBB（实验，仅 Debug 可视化）─────────────
+        // // 把本帧匹配到的 Cluster 的 1cm Raw Point Image minAreaRect 结果写入 outTracks 的
+        // // 实验字段 new_corners；不改变任何现有输出（corners/depth/width/tracker/UDP 全不动）。
+        // AttachRawImageObbs(outputClusters, outTracks);
 
         // ── Historical Feedback（Phase 2/3 Quick Validation，实验性）──────────────────
         // 只产生 Debug 证据（投影到当前 Grid 的空间先验 + Fused 统计），
@@ -1117,10 +1128,18 @@ void SutengDriver::ProcessPcapCloud(){
         //     UpdateMapAnchors(loc_pose, have_pose);
         // }
 
-        // ── Phase 3-B: STATIC Historical Geometry（cell 补充；fused OBB 默认关闭）──
-        // 复用 Phase 2 的 m_historicalFeedback（association + projected cells）。
-        // ⚠ 必须在 UpdateMapAnchors() 之后：确保 Phase 2 锚点基于原始检测几何，不被 fused 几何污染。
+        // // ── Phase 3-B: STATIC Historical Geometry（cell 补充；fused OBB 默认关闭）──
+        // // 复用 Phase 2 的 m_historicalFeedback（association + projected cells）。
+        // // ⚠ 必须在 UpdateMapAnchors() 之后：确保 Phase 2 锚点基于原始检测几何，不被 fused 几何污染。
         // ApplyHistoricalGeometry(outputClusters);
+
+
+        for (const auto& track : m_tracker.vtrackings)
+        {
+            
+            LOG_RAW("Track id: %d type(%d) {age=%d lastSeen=%d}: Center(%.2f, %.2f, %.2f), \n", track.id, track.detection_source, track.age, track.lastSeen, track.pos_x, track.pos_y, track.pos_z);
+        }
+
 
         // ── Debug: 第九层 跟踪结果点云叠加图 (TrackedObstacle 版本) ──
         // 需要 DebugViewer 配置 TrackerOverlay.enable=1 才会绘制
@@ -1567,7 +1586,7 @@ void SutengDriver::UpdateTrackMotionStates(const LocalizationManager::Pose& pose
             reanchored = true;
             
             // ---- 日志：miss 都输出，便于判断“为什么”是该状态 ----
-            LOG_RAW("[MotionState] Track=%d miss{age=%d lastSeen=%d} state=%s Center(%.2f,%.2f,%.2f) map=(%.2f,%.2f) step=%.3f 净位移=%.3f dir=%.1f mapV=(%.2f,%.2f) obs=%d anchor=%d hist=%zu srun=%d mrun=%d\n",
+            LOG_RAW("[MotionState] Track=%d MISS{age=%d lastSeen=%d} state=%s Center(%.2f,%.2f,%.2f) map=(%.2f,%.2f) step=%.3f 净位移=%.3f dir=%.1f mapV=(%.2f,%.2f) obs=%d anchor=%d hist=%zu srun=%d mrun=%d\n",
                     t.id, t.age, t.lastSeen, MotionStateName(t.motion_state),
                     t.pos_x, t.pos_y, t.pos_z,
                     t.map_x, t.map_y, t.motion_step, t.motion_net, t.motion_dir_deg,
@@ -1579,6 +1598,402 @@ void SutengDriver::UpdateTrackMotionStates(const LocalizationManager::Pose& pose
 
         
     }
+}
+
+// ============================================================================
+// Local Missing Target Recheck（第一版，STATIC only）
+// ============================================================================
+// 插入位置（必须）：
+//   m_tracker.update() → UpdateTrackMotionStates() → UpdateMapAnchors()
+//      → 【RunLocalMissingTargetRecheck()】 → RefineStaticObbGeometry()
+//
+// 核心模型：
+//   Tracker miss → UpdateTrackMotionStates（miss 分支把地图锚点重投影成本帧雷达系位置）
+//   → UpdateMapAnchors（原有 miss 语义，一行不改）
+//   → Local Recheck（3×3 ROI + ring ground + ONE raw scan + cell 数变化约束）
+//        ├─ reject → 保持原有 miss 状态（不改动 Track 任何字段）
+//        └─ recover → current_exist=true / detection_source=RECOVERED / cluster_id=-1
+//                     ⚠ lastSeen 保持不变；geometry / velocity / map anchor 全不动
+//
+// 第一版明确不实现：
+//   CELL_REF_FALLBACK / NOMINAL_FALLBACK / Recheck OBB（minAreaRect / PCA / contour）/
+//   历史轮廓融合 / 点云累积 / 3D 重建 / 第二套 tracker 或 lifetime / 复杂 confidence score /
+//   自适应或大 ROI（固定 3×3） / 重跑 Ground Filter 或 ClusterObstacleGrid
+// ============================================================================
+
+// ---- 第一版常量 ----
+// 「异常于局部地面」的最小高度（m）。
+// 上限【直接复用】ElevationGridConfig::vertical_structure_height_min（默认 0.50m，见
+// ScanRecheckRawPointsOnce），不再新建语义重复的 kMaxResidual（Prompt 二十三）。
+// 为什么不复用 layer_resolution(0.05)：本特性的检测对象就是 5~10cm 的低矮目标，
+// 0.05 会把目标顶面点也判成"贴地"而漏掉证据；0.03 是本次唯一新增的高度阈值。
+static constexpr float kRecheckMinGroundResidual = 0.03f;
+
+// occupied cell 数的帧间允许变化（第一版实验参数，Prompt 二十一）
+static constexpr int kRecheckMaxCellDiff = 3;
+
+// ring 中最少可靠 ground cell 数（Prompt 十九：不足则失败，不做 fallback）
+static constexpr int kRecheckMinRingGroundCells = 3;
+
+const char* SutengDriver::RecheckResultName(RecheckResult r)
+{
+    switch (r)
+    {
+        case RecheckResult::NOT_RUN:                return "NOT_RUN";
+        case RecheckResult::RECOVERED:              return "RECOVERED";
+        case RecheckResult::REJECT_NO_RING_GROUND:  return "REJECT_NO_RING_GROUND";
+        case RecheckResult::REJECT_NO_EVIDENCE:     return "REJECT_NO_EVIDENCE";
+        case RecheckResult::REJECT_NO_REFERENCE:    return "REJECT_NO_REFERENCE";
+        case RecheckResult::REJECT_CELL_COUNT_JUMP: return "REJECT_CELL_COUNT_JUMP";
+    }
+    return "UNKNOWN";
+}
+
+void SutengDriver::RunLocalMissingTargetRecheck(const pcl::PointCloud<pcl::PointXYZI>& rawCloud,
+                                                const std::vector<GridCluster>& clusters,
+                                                bool pose_valid)
+{
+    if (!m_localRecheckEnable) return;
+
+    // 先记录本帧【正常 detection】的 cell 数参考基准（必须早于候选筛选/判定）。
+    // 与 pose 无关，所以放在 pose 门之前：定位短暂中断后恢复时，参考基准不会因为
+    // “中断期间没记”而失效（该字段只由 NORMAL detection 更新）。
+    RecordNormalDetectionHistory(clusters);
+
+    // 定位无效：miss Track 的 pos_x/pos_y 不是"地图锚点 → 本帧雷达系"的预测位置
+    // （UpdateTrackMotionStates 的 miss 分支不执行）→ ROI 中心不可信，直接不做。
+    if (!pose_valid)
+    {
+        LOG_RAW("[Recheck] skip: pose invalid (no current radar-frame prediction)\n");
+        return;
+    }
+
+    // 候选 Track + 3×3 mask + ring ground
+    const int n_cand = CollectRecheckTracksAndBuildMasks(clusters);
+    if (n_cand == 0) return;
+
+    // ★ 一次 raw point scan（禁止 per-track 全量扫描）
+    ScanRecheckRawPointsOnce(rawCloud);
+
+    // 判定 + 写回（失败不动任何 Track 状态）
+    EvaluateAndApplyRecheckResults();
+}
+
+// 本帧正常 detection 的参考基准：只由 NORMAL detection 更新。
+// ⚠ RECOVERED 帧【不】更新它，否则参考基准会被 Recheck 自己的结果逐帧带偏
+//   （5 → 4 → 3 → 2 的自我强化漂移，Prompt 三十九/四十）。
+void SutengDriver::RecordNormalDetectionHistory(const std::vector<GridCluster>& clusters)
+{
+    // 本帧 cluster id → cell 数（cluster.id 是帧内局部编号，从 0 递增；用哈希表稳妥）
+    std::unordered_map<int, int> cluster_cell_count;
+    cluster_cell_count.reserve(clusters.size());
+    for (const auto& cl : clusters)
+    {
+        cluster_cell_count[cl.id] = static_cast<int>(cl.cell_indices.size());
+    }
+
+    for (auto& t : m_tracker.vtrackings)
+    {
+        // lastSeen == 0 → 本帧经正常 Tracker 关联匹配成功（含本帧新建的 Track）
+        if (t.lastSeen != 0) continue;
+
+        auto it = cluster_cell_count.find(t.cluster_id);
+        if (it == cluster_cell_count.end()) continue;  // 本帧找不到对应 Cluster（理论上不应发生）
+
+        t.normal_occupied_cells = it->second;
+    }
+}
+
+// 收集候选 Track + 构建 3×3 recheckMask + 采集 ring ground。
+// 复杂度 O(T × 25 + Σ cluster cells)：每个候选只处理自己的 5×5 邻域。
+int SutengDriver::CollectRecheckTracksAndBuildMasks(const std::vector<GridCluster>& clusters)
+{
+    const ElevationGridConfig&   cfg       = m_pElevationMapGroundFilter->GetConfig();
+    const std::vector<GridCell>& grid      = m_pElevationMapGroundFilter->GetGrid();
+    const int   rows      = m_pElevationMapGroundFilter->GetGridRows();
+    const int   cols      = m_pElevationMapGroundFilter->GetGridCols();
+    const float eff_x_min = m_pElevationMapGroundFilter->GetEffectiveRoiXMin();
+    const float roi_y_min = cfg.roi_y_min;
+    const float res       = cfg.grid_resolution;
+
+    m_recheckSlots.clear();
+    if (rows <= 0 || cols <= 0 || res <= 0.0f || grid.empty()) return 0;
+
+    // 每帧整体清零（O(Grid)）：EMX 配置 13360 个 uint32 = 53KB，逐帧 fill 成本可忽略
+    m_recheckMask.assign(static_cast<size_t>(rows) * static_cast<size_t>(cols), 0u);
+
+    // ---- 本帧已被【正常 Cluster】认领的 cell（Case 7 保护） ----
+    // 这些 cell 上的点已经由别的正常 Track / 本帧新 Track 代表，不再作为本候选 Track 的
+    // 恢复证据 → 避免"用邻近目标的 raw points 错误恢复本 Track"。
+    // 注意：Case B（1~2 cell，不够 min_cluster_cells）不产生 Cluster → 不受影响，仍可恢复。
+    m_recheckClaimedCells.assign(static_cast<size_t>(rows) * static_cast<size_t>(cols), 0u);
+    const size_t n_cells = m_recheckClaimedCells.size();
+    for (const auto& cl : clusters)
+    {
+        for (int idx : cl.cell_indices)
+        {
+            if (idx >= 0 && static_cast<size_t>(idx) < n_cells) m_recheckClaimedCells[static_cast<size_t>(idx)] = 1u;
+        }
+    }
+
+    const float inv_res = 1.0f / res;
+    int truncated = 0;
+
+    for (size_t ti = 0; ti < m_tracker.vtrackings.size(); ++ti)
+    {
+        TrackedObstacle& t = m_tracker.vtrackings[ti];
+
+        // ---- 候选硬门（Prompt 五）：只处理"已存在 + STATIC + 本帧 miss"的 Track ----
+        if (t.motion_state != MotionState::STATIC) continue;  // UNKNOWN / MOVING 不参与
+        if (t.lastSeen <= 0)                       continue;  // 本帧正常检测到 → 不需要恢复
+        if (!t.has_map_pos)                        continue;  // 无地图锚点 → 预测位置不可信
+
+        if (static_cast<int>(m_recheckSlots.size()) >= kRecheckMaxTracks)
+        {
+            truncated++;
+            continue;
+        }
+
+        // ---- ROI 中心 = 当前帧雷达系预测位置（UpdateTrackMotionStates miss 分支已重投影）----
+        const float px = t.pos_x;
+        const float py = t.pos_y;
+        if (px < eff_x_min || px >= cfg.roi_x_max ||
+            py < roi_y_min || py >= cfg.roi_y_max)
+        {
+            LOG_RAW("[Recheck skip=OUT_OF_GRID] Track %d  pred=(%.2f,%.2f) "
+                    "(grid x=[%.2f,%.2f) y=[%.2f,%.2f))\n",
+                    t.id, px, py, eff_x_min, cfg.roi_x_max, roi_y_min, cfg.roi_y_max);
+            continue;
+        }
+
+        int cr = static_cast<int>(std::floor((py - roi_y_min) * inv_res));
+        int cc = static_cast<int>(std::floor((px - eff_x_min) * inv_res));
+        // 与 WorldToGrid 相同的浮点边界保护
+        if (cr >= rows) cr = rows - 1;
+        if (cc >= cols) cc = cols - 1;
+        if (cr < 0 || cc < 0 || cr >= rows || cc >= cols) continue;
+
+        RecheckTrackSlot slot;
+        slot.track_index = static_cast<int>(ti);
+        slot.bit         = 1u << static_cast<unsigned>(m_recheckSlots.size());
+        slot.center_row  = cr;
+        slot.center_col  = cc;
+
+        // ---- Ring Ground：5×5 \ 3×3（ROI 外围一圈）中已被主 Ground Filter 判为 ground 的 cell ----
+        // 为什么只用 ring：Case A 中目标自身的 cell 可能被 RegionGrowing 误吸收成 is_ground，
+        //   用它当局部地面会自污染（ground 被抬到目标顶面 → residual≈0 → 永远恢复不了）。
+        // 为什么不做 FALLBACK（Prompt 十八）：ring 不足说明局部地面不可信，宁可不恢复。
+        float zs[16];
+        int   n = 0;
+        for (int dr = -2; dr <= 2; ++dr)
+        {
+            for (int dc = -2; dc <= 2; ++dc)
+            {
+                if (std::abs(dr) <= 1 && std::abs(dc) <= 1) continue;  // 跳过 3×3 ROI 本体
+                const int r = cr + dr;
+                const int c = cc + dc;
+                if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
+                const GridCell& cell = grid[static_cast<size_t>(r) * static_cast<size_t>(cols) + c];
+                if (!cell.valid || !cell.is_ground || cell.is_interpolated_ground) continue;
+                if (n < 16) zs[n++] = cell.min_z;   // 复用现有 cell 高度字段，不新建高度定义
+            }
+        }
+        slot.ring_ground_cells = n;
+        if (n >= kRecheckMinRingGroundCells)
+        {
+            std::sort(zs, zs + n);
+            slot.local_ground_z = (n % 2 == 1) ? zs[n / 2]
+                                               : (zs[n / 2 - 1] + zs[n / 2]) * 0.5f;
+            slot.ground_valid = true;
+        }
+
+        // ---- 写 mask：ROI 的 9 个 cell（越界的 cell 不写 → 该位置的点不会被计入证据）----
+        for (int dr = -1; dr <= 1; ++dr)
+        {
+            for (int dc = -1; dc <= 1; ++dc)
+            {
+                const int r = cr + dr;
+                const int c = cc + dc;
+                if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
+                m_recheckMask[static_cast<size_t>(r) * static_cast<size_t>(cols) + c] |= slot.bit;
+            }
+        }
+
+        m_recheckSlots.push_back(slot);
+    }
+
+    if (truncated > 0)
+    {
+        LOG_RAW("[Recheck] WARN candidates > kRecheckMaxTracks(%d): %d track(s) not rechecked\n",
+                kRecheckMaxTracks, truncated);
+    }
+
+    LOG_RAW("[Recheck] frame=%d candidates=%d (mask=%dx%d)\n",
+            test_Frame_count, static_cast<int>(m_recheckSlots.size()), rows, cols);
+
+    return static_cast<int>(m_recheckSlots.size());
+}
+
+// ★ ONE raw point scan（Prompt 十六）：禁止 per-track 全量扫描。
+// 复杂度 O(N) + O(命中 ROI 的点 × 该 cell 上的 track 数)；
+// mask == 0 的点（绝大多数）在第一步就直接跳过。
+void SutengDriver::ScanRecheckRawPointsOnce(const pcl::PointCloud<pcl::PointXYZI>& rawCloud)
+{
+    const ElevationGridConfig& cfg       = m_pElevationMapGroundFilter->GetConfig();
+    const int   rows      = m_pElevationMapGroundFilter->GetGridRows();
+    const int   cols      = m_pElevationMapGroundFilter->GetGridCols();
+    const float eff_x_min = m_pElevationMapGroundFilter->GetEffectiveRoiXMin();
+    const float roi_y_min = cfg.roi_y_min;
+    const float res       = cfg.grid_resolution;
+    if (rows <= 0 || cols <= 0 || res <= 0.0f) return;
+
+    const float inv_res = 1.0f / res;
+
+    // 证据 = "异常于局部地面的点"：residual ∈ [kRecheckMinGroundResidual, vertical_structure_height_min]
+    //   下限：贴地噪声 / 地面自身起伏不算证据
+    //   上限：复用现有配置 vertical_structure_height_min（0.50m）—— 明显高于低矮目标范围的点
+    //         （行人腿部、高大物体）不作为低矮目标的存在性证据
+    const float min_residual = kRecheckMinGroundResidual;
+    const float max_residual = cfg.vertical_structure_height_min;
+
+    const int n_slots = static_cast<int>(m_recheckSlots.size());
+    if (n_slots == 0) return;
+
+    size_t mask_hit_points = 0;
+
+    for (const auto& p : rawCloud.points)
+    {
+        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
+        if (p.x < eff_x_min || p.x >= cfg.roi_x_max ||
+            p.y < roi_y_min || p.y >= cfg.roi_y_max) continue;
+
+        int row = static_cast<int>(std::floor((p.y - roi_y_min) * inv_res));
+        int col = static_cast<int>(std::floor((p.x - eff_x_min) * inv_res));
+        if (row >= rows) row = rows - 1;   // 浮点边界保护（与 WorldToGrid 一致）
+        if (col >= cols) col = cols - 1;
+        if (row < 0 || col < 0 || row >= rows || col >= cols) continue;
+
+        const size_t cell_idx = static_cast<size_t>(row) * static_cast<size_t>(cols) + col;
+
+        const uint32_t m = m_recheckMask[cell_idx];
+        if (m == 0u) continue;             // ★ 绝大多数点在这里直接跳过
+
+        // 该 cell 的点已被本帧某个正常 Cluster 认领 → 不作为 Recheck 证据（Case 7 保护）
+        if (m_recheckClaimedCells[cell_idx]) continue;
+        mask_hit_points++;
+
+        for (int s = 0; s < n_slots; ++s)
+        {
+            RecheckTrackSlot& slot = m_recheckSlots[s];
+            if ((m & slot.bit) == 0u) continue;
+            if (!slot.ground_valid) continue;      // 局部地面不可信 → 不采证据
+
+            const float residual = p.z - slot.local_ground_z;
+            if (residual < min_residual || residual > max_residual) continue;
+
+            const int lr = row - slot.center_row + 1;   // 0..2
+            const int lc = col - slot.center_col + 1;   // 0..2
+            uint16_t& hits = slot.roi_evidence[lr * 3 + lc];
+            if (hits < 65535) hits++;
+            slot.evidence_points++;
+        }
+    }
+
+    LOG_RAW("[Recheck] one-scan done: raw=%zu, mask_hit=%zu\n", rawCloud.points.size(), mask_hit_points);
+}
+
+// 判定 + 写回。失败时【不修改】Track 任何状态（Prompt 四十一）。
+void SutengDriver::EvaluateAndApplyRecheckResults()
+{
+    int n_recovered = 0;
+
+    for (auto& slot : m_recheckSlots)
+    {
+        if (slot.track_index < 0 ||
+            slot.track_index >= static_cast<int>(m_tracker.vtrackings.size()))
+        {
+            continue;
+        }
+        TrackedObstacle& t = m_tracker.vtrackings[static_cast<size_t>(slot.track_index)];
+
+        // ---- 当前证据：3×3 ROI 内被"异常于局部地面的点"占用的 cell 数 ----
+        slot.current_cells = 0;
+        for (int i = 0; i < 9; ++i)
+        {
+            if (slot.roi_evidence[i] > 0) slot.current_cells++;
+        }
+        slot.prev_normal_cells = t.normal_occupied_cells;
+        slot.cell_diff         = slot.current_cells - slot.prev_normal_cells;
+
+        // ---- 判定：先"有无当前证据"，再看 cell 数变化（Prompt 二十~二十二）----
+        RecheckResult r;
+        if (!slot.ground_valid)
+        {
+            // ring 中可靠 ground cell < 3 → 无可靠局部地面参考，不做任何 fallback
+            r = RecheckResult::REJECT_NO_RING_GROUND;
+        }
+        else if (slot.evidence_points <= 0 || slot.current_cells <= 0)
+        {
+            // 当前 3×3 ROI 内没有任何当前证据（如 current=0，即使 diff 很小也不能恢复）
+            r = RecheckResult::REJECT_NO_EVIDENCE;
+        }
+        else if (slot.prev_normal_cells <= 0)
+        {
+            // 尚无 NORMAL detection 的参考基准 → 无法做稳定性约束，保守不恢复
+            r = RecheckResult::REJECT_NO_REFERENCE;
+        }
+        else if (std::abs(slot.cell_diff) > kRecheckMaxCellDiff)
+        {
+            // 与最近一次【正常 Cluster】的占用 cell 数偏差过大（如 prev=5, cur=9 / cur=1）
+            r = RecheckResult::REJECT_CELL_COUNT_JUMP;
+        }
+        else
+        {
+            r = RecheckResult::RECOVERED;
+        }
+        slot.result = static_cast<uint8_t>(r);
+
+        LOG_RAW("[Recheck] Track %d state=%s lastSeen=%d pred=(%.2f,%.2f) roi=3x3 centerCell=(%d,%d) "
+                "ring_ground_cells=%d local_ground_z=%.3f prev_cells=%d current_cells=%d diff=%d "
+                "evidence_pts=%d result=%s\n",
+                t.id, MotionStateName(t.motion_state), t.lastSeen,
+                t.pos_x, t.pos_y, slot.center_row, slot.center_col,
+                slot.ring_ground_cells, slot.local_ground_z,
+                slot.prev_normal_cells, slot.current_cells, slot.cell_diff,
+                slot.evidence_points, RecheckResultName(r));
+
+        if (r != RecheckResult::RECOVERED)
+        {
+            t.detection_source = DetectionSource::RECOVERED_MISS;
+
+            continue;   // 失败：lastSeen / current_exist / geometry / velocity / map anchor 全不动
+        }
+
+        // ---- post-association repair：只标记"本帧存在"，绝不碰生命周期与几何 ----
+        // ⚠ 不修改 lastSeen（语义分离：lastSeen 只表示正常 detection 意义的连续漏检帧数）
+        // ⚠ 不修改 age / vx,vy / pos_* / depth / width / height / corners
+        // ⚠ 不修改 normal_occupied_cells（参考基准只由 NORMAL detection 更新）
+        // ⚠ 不写 m_mapTracks（UpdateMapAnchors 的 miss 语义保持原样）
+        t.current_exist    = true;
+        t.detection_source = DetectionSource::RECOVERED;
+        t.cluster_id       = -1;   // cluster_id 是帧内编号；恢复帧没有对应 Cluster，
+                                   // 置 -1 以避免 RefineStaticObbGeometry / AttachRawImageObbs
+                                   // 按旧编号命中本帧另一个 Cluster
+
+        // 诊断快照（仅日志/实验分析用）
+        t.recheck_evidence_points   = slot.evidence_points;
+        t.recheck_current_cells     = slot.current_cells;
+        t.recheck_ring_ground_cells = slot.ring_ground_cells;
+        t.recheck_local_ground_z    = slot.local_ground_z;
+        t.recheck_cell_diff         = slot.cell_diff;
+
+        n_recovered++;
+        LOG_RAW("[RecheckRecovered] Track %d lastSeen=%d(current frame NOT reset) src=RECOVERED "
+                "geometry=KEEP(previous) cluster_id=-1\n", t.id, t.lastSeen);
+    }
+
+    LOG_RAW("[RecheckSummary] frame=%d candidates=%d recovered=%d\n",
+            test_Frame_count, static_cast<int>(m_recheckSlots.size()), n_recovered);
 }
 
 // ============================================================================
@@ -1786,7 +2201,7 @@ void SutengDriver::RefineStaticObbGeometry(const std::vector<GridCluster>& clust
         }
     }
 
-    LOG_RAW("[GeomRefineSummary] tracks=%zu static=%d refined=%d yawPca=%d yawHistory=%d raw=%d "
+    LOG_RAW("[GeomRefineSummary] tracks size=%zu static=%d refined=%d yawPca=%d yawHistory=%d raw=%d "
             "notStatic=%d noMatch=%d noCluster=%d noObb=%d noPose=%d noUsefulYaw=%d axisMismatch=%d\n",
             m_tracker.vtrackings.size(), n_static, n_refined, n_pca, n_hist,
             (n_static - n_refined), n_not_static, n_no_match, n_no_cluster, n_no_obb,

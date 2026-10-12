@@ -8,6 +8,7 @@
 #include <sys/time.h>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 
 #include <ctime> // 必须包含，提供 time_t 和 struct tm
 
@@ -47,6 +48,33 @@ public:
     float getPosY() const { return state[1]; }
 };
 
+
+// ============================================================================
+// Local Missing Target Recheck（第一版）：Track 本帧“观测来源”标记
+//
+//   NORMAL    = 本帧由正常链路得到：GroundFilter → Cluster → SimpleTracker 关联匹配
+//   RECOVERED = 本帧 Tracker 判定 miss，但 Local Missing Target Recheck 在
+//               预测位置 3×3 ROI 的 raw point 中找到了存在性证据，
+//               对【已存在的 Track】做 post-association repair
+
+//   NORMAL_MISS = 本帧 Tracker 判定 miss,没有进入Local Missing Target Recheck阶段
+//   RECOVERED_MISS = 本帧Local Missing Target Rechec阶段 没有找到存在性证据
+
+
+//
+// ⚠ 语义边界（重要）：
+//   - 它只描述“本帧这条 Track 的观测来自哪里”，不参与任何生命周期决策；
+//   - Recheck 成功后【不修改 lastSeen】：lastSeen 始终表示
+//     “正常 Tracker detection/association 意义上的连续漏检帧数”；
+//   - 删除仍然只由 SimpleTracker::removeLongLostTargets() 负责。
+// ============================================================================
+enum class DetectionSource : uint8_t
+{
+    NORMAL    = 0,   ///< 正常 detection
+    RECOVERED = 1,    ///< Recheck 恢复（existence recovery）
+    NORMAL_MISS = 2,            // 
+    RECOVERED_MISS = 3
+};
 
 // 定义一个带ID的障碍物结构体
 struct TrackedObstacle {
@@ -105,6 +133,26 @@ struct TrackedObstacle {
     //==================
     bool current_exist = true;
 
+    // ========================================================================
+    // Local Missing Target Recheck（第一版，STATIC only）
+    //   ⚠ 以下字段必须在【拷贝构造 / 拷贝赋值】中同步拷贝（见下方手写实现），
+    //     否则 outTracks = m_tracker.vtrackings 的副本会丢字段
+    // ========================================================================
+    DetectionSource detection_source = DetectionSource::NORMAL; ///< 本帧观测来源（NORMAL/RECOVERED）
+
+    /// 最近一次【正常 Cluster detection】的占用 cell 数（Recheck 的稳定性参考基准）。
+    /// -1 = 尚无正常 detection 记录。
+    /// ⚠ 只能由正常 detection 更新：RECOVERED 帧【不】更新它，
+    ///   否则参考基准会被 Recheck 自己的结果逐帧带偏（自我强化漂移）。
+    int normal_occupied_cells = -1;
+
+    // ---- Recheck 诊断快照（仅在 Recheck 成功的帧写入；纯诊断，不参与任何算法决策）----
+    int   recheck_evidence_points   = 0;    ///< 3×3 ROI 内异常于局部地面的 raw 点数
+    int   recheck_current_cells     = 0;    ///< 3×3 ROI 内被上述点占用的 cell 数
+    int   recheck_ring_ground_cells = 0;    ///< ring 中可靠 ground cell 数
+    float recheck_local_ground_z    = 0.0f; ///< ring ground cell 的 min_z 中位数
+    int   recheck_cell_diff         = 0;    ///< current_cells - normal_occupied_cells
+
     // 新增：指向卡尔曼滤波器的智能指针
     std::unique_ptr<KalmanFilter2D> kf;
 
@@ -132,6 +180,14 @@ struct TrackedObstacle {
         // ⚠ current_exist 必须同步拷贝，否则 outTracks = m_tracker.vtrackings 的副本里
         //   恒为默认值 true → DebugViewer 的 miss 分支永不执行
         current_exist = other.current_exist;
+        // Local Missing Target Recheck：来源标记 + 诊断字段（漏拷 → 输出副本丢 RECOVERED 标记）
+        detection_source        = other.detection_source;
+        normal_occupied_cells   = other.normal_occupied_cells;
+        recheck_evidence_points = other.recheck_evidence_points;
+        recheck_current_cells   = other.recheck_current_cells;
+        recheck_ring_ground_cells = other.recheck_ring_ground_cells;
+        recheck_local_ground_z  = other.recheck_local_ground_z;
+        recheck_cell_diff       = other.recheck_cell_diff;
         for(int i = 0; i < 3; i++) Translation[i] = other.Translation[i];
         for(int i = 0; i < 9; i++) Rotation[i] = other.Rotation[i];
         for(int i = 0; i < 4; i++) corners[i] = other.corners[i];
@@ -192,6 +248,14 @@ struct TrackedObstacle {
         // ⚠ current_exist 必须同步拷贝，否则 outTracks = m_tracker.vtrackings 的副本里
         //   恒为默认值 true → DebugViewer 的 miss 分支永不执行
         current_exist = other.current_exist;
+        // Local Missing Target Recheck：来源标记 + 诊断字段（漏拷 → 输出副本丢 RECOVERED 标记）
+        detection_source        = other.detection_source;
+        normal_occupied_cells   = other.normal_occupied_cells;
+        recheck_evidence_points = other.recheck_evidence_points;
+        recheck_current_cells   = other.recheck_current_cells;
+        recheck_ring_ground_cells = other.recheck_ring_ground_cells;
+        recheck_local_ground_z  = other.recheck_local_ground_z;
+        recheck_cell_diff       = other.recheck_cell_diff;
         for(int i = 0; i < 3; i++) Translation[i] = other.Translation[i];
         for(int i = 0; i < 9; i++) Rotation[i] = other.Rotation[i];
         for(int i = 0; i < 4; i++) corners[i] = other.corners[i];

@@ -102,8 +102,8 @@ struct ElevationGridConfig
     int min_cluster_cells = 3;
 
     // ---- Ground Cell 高度范围上限 (m) ----
-    // （当前未在 RegionGrowing 中使用，保留供后续扩展）
-    float max_ground_height_range = 0.15f;
+    // // （当前未在 RegionGrowing 中使用，保留供后续扩展）
+    // float max_ground_height_range = 0.15f;
 
     // ---- Tall Neighbor Filter（高大物体邻域过滤） ----
     // 对于满足 is_obstacle_candidate 的 cell，检查其 8 邻域中是否有
@@ -840,7 +840,7 @@ private:
     std::vector<uint8_t> m_rawPointCounter;  // 每像素障碍物点数（饱和 255），仅日志用
     int m_rawImageW = 0;                     // = ceil((roi_x_max - roi_x_min) / 0.01)
     int m_rawImageH = 0;                     // = ceil((roi_y_max - roi_y_min) / 0.01)
-    int m_rawImageFrame = 0;                 // 图像生成帧计数（仅用于 [RawImgOBB] 日志）
+    int m_rawImageFrame = 1;                 // 图像生成帧计数（仅用于 [RawImgOBB] 日志）,为了和程序一启动跳过第一帧
 
     // ---- OBB + Tracker 成员 ----
     std::unique_ptr<SimpleTracker> tracker_;           // 简易跟踪器 (贪心匹配 + ID管理)

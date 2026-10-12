@@ -174,6 +174,92 @@ private:
                             std::vector<TrackedObstacle>& outTracks) const;
     VisFrameBuffer m_visBuffer;    // 帧缓冲：工作线程 → 主线程
 
+    // ========================================================================
+    // Local Missing Target Recheck（第一版，STATIC only）
+    //
+    // 职责（极窄）：对【已经存在、本帧被正常 Tracker 判为 miss 的 STATIC Track】，
+    //   在其预测位置的 3×3 Grid ROI 内做一次局部 raw point recheck；
+    //   若局部原始点云仍提供存在性证据 → 把该 Track 标记为 RECOVERED。
+    //
+    // 它【不是】第二个检测器 / 第二个 Tracker / OBB 重建器：
+    //   - 不重跑 m_tracker.update()，不构造 detection，不新增 ID
+    //   - 不修改 lastSeen / age / vx,vy / geometry / map anchor / m_mapTracks
+    //   - 不写 outputClusters（Recovered 不进入 Cluster 数据）
+    //   - 不修改 Ground Filter / Grid / Cluster / HDMap / Localization / UDP
+    //
+    // 时序（必须）：m_tracker.update() → UpdateTrackMotionStates() → UpdateMapAnchors()
+    //               → 【本函数】 → RefineStaticObbGeometry()
+    //   - 在 UpdateTrackMotionStates() 之后：miss Track 的 pos_x/pos_y 已是
+    //     “地图锚点 → 当前帧雷达系”的预测位置（本函数直接用它做 ROI 中心）
+    //   - 在 UpdateMapAnchors() 之后：该函数的 miss 语义完全不变
+    //   - 在 RefineStaticObbGeometry() 之前：RECOVERED 的 current_exist/几何能被
+    //     outTracks 快照带到 Debug / visBuffer / UDP
+    // ========================================================================
+
+    /// 每个 Recheck 候选 Track 的工作槽（固定小尺寸，无堆分配）
+    struct RecheckTrackSlot
+    {
+        int      track_index = -1;   ///< m_tracker.vtrackings 下标
+        uint32_t bit         = 0;    ///< 该槽在 m_recheckMask 中的 bit（1u << slot）
+        int      center_row  = 0;    ///< ROI 中心 cell（Grid row/col）
+        int      center_col  = 0;
+
+        // ---- Ring Ground（5×5 \ 3×3 中被正常 Ground Filter 判为 ground 的 cell）----
+        bool  ground_valid      = false; ///< ring ground cell 数 >= kRecheckMinRingGroundCells
+        int   ring_ground_cells = 0;
+        float local_ground_z    = 0.0f;  ///< ring ground cell 的 min_z 中位数
+
+        // ---- 3×3 ROI 内的 raw point 证据（行主序：(dr+1)*3 + (dc+1)）----
+        uint16_t roi_evidence[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+        int      evidence_points = 0;    ///< 异常于局部地面的点数
+        int      current_cells   = 0;    ///< 被上述点占用的 ROI cell 数
+
+        // ---- 判定 ----
+        int     prev_normal_cells = -1;  ///< 参考基准（最近一次 NORMAL detection 的 cluster cell 数）
+        int     cell_diff         = 0;   ///< current_cells - prev_normal_cells
+        uint8_t result            = 0;   ///< RecheckResult（仅日志/诊断）
+    };
+
+    /// Recheck 结果（日志用；REJECT_* 表示本次不恢复，Track 状态保持不变）
+    enum class RecheckResult : uint8_t
+    {
+        NOT_RUN = 0,
+        RECOVERED,
+        REJECT_NO_RING_GROUND,   ///< ring 内可靠 ground cell < 3（不做任何 fallback）
+        REJECT_NO_EVIDENCE,      ///< 3×3 ROI 内没有当前证据（如 current_cells == 0）
+        REJECT_NO_REFERENCE,     ///< 尚无 NORMAL detection 的 cell 数参考基准
+        REJECT_CELL_COUNT_JUMP   ///< |current - previous| > kRecheckMaxCellDiff
+    };
+    static const char* RecheckResultName(RecheckResult r);
+
+    /// Recheck 入口（在 UpdateMapAnchors() 之后、RefineStaticObbGeometry() 之前调用）
+    void RunLocalMissingTargetRecheck(const pcl::PointCloud<pcl::PointXYZI>& rawCloud,
+                                      const std::vector<GridCluster>& clusters,
+                                      bool pose_valid);
+
+    /// 记录本帧【正常 detection】的 cluster cell 数（Recheck 的稳定性参考基准）。
+    /// ⚠ 只由 NORMAL detection 更新：RECOVERED 帧不更新（防止参考基准自我强化漂移）。
+    void RecordNormalDetectionHistory(const std::vector<GridCluster>& clusters);
+
+    /// 收集候选 Track + 构建 3×3 recheckMask + ring ground；返回候选数
+    int CollectRecheckTracksAndBuildMasks(const std::vector<GridCluster>& clusters);
+
+    /// 一次 raw point scan：点 → Grid cell → recheckMask → 累加到对应 Track 的 evidence
+    void ScanRecheckRawPointsOnce(const pcl::PointCloud<pcl::PointXYZI>& rawCloud);
+
+    /// 判定 + 写回 RECOVERED 状态（失败时不动 Track 的任何状态）
+    void EvaluateAndApplyRecheckResults();
+
+    static constexpr int kRecheckMaxTracks = 32;  ///< m_recheckMask 为 uint32_t，最多 32 个候选
+
+    // ---- 跨帧复用缓冲（避免逐帧堆分配）----
+    std::vector<uint32_t>         m_recheckMask;   ///< rows*cols，每个 bit = 一个 Recheck slot
+    std::vector<uint8_t>          m_recheckClaimedCells; ///< rows*cols，1 = 已被本帧正常 Cluster 占据
+    std::vector<RecheckTrackSlot> m_recheckSlots;  ///< 本帧候选（每帧重建，尺寸很小）
+    
+    ///< 第一版开关：false → 完全绕过（零行为变化）
+    bool m_localRecheckEnable = true;       
+           
     /* ---- 可视化成员已迁移至 main.cpp（注释保留） ----
     std::shared_ptr<pcl::visualization::PCLVisualizer> st_pcl_viewer = nullptr;
 

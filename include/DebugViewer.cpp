@@ -1723,11 +1723,31 @@ void DebugViewer::DrawMapAndAllOverlay(const pcl::PointCloud<pcl::PointXYZI>& gr
         }
         */
 
-        // corners[4] 多边形: 匹配成功 → 白色; miss → 青色(粗线)
-        if(!need_map_rebuild)
-            cv::polylines(image, pts, true, cv::Scalar(255, 255, 255), 2);
-        else
+        // // corners[4] 多边形: 匹配成功 → 白色; miss → 青色(粗线)
+        // if(!need_map_rebuild)
+        //     cv::polylines(image, pts, true, cv::Scalar(255, 255, 255), 2);
+        // else
+        //     cv::polylines(image, pts, true, cv::Scalar(220, 220, 0), 5);
+
+
+        if(t.detection_source == DetectionSource::NORMAL_MISS){
+            //黄色
+            cv::polylines(image, pts, true, cv::Scalar(0, 220, 220), 2);
+        }
+        else if(t.detection_source == DetectionSource::RECOVERED){
+            //青色
             cv::polylines(image, pts, true, cv::Scalar(220, 220, 0), 5);
+        }
+        else if(t.detection_source == DetectionSource::RECOVERED_MISS){
+            //黄色
+            cv::polylines(image, pts, true, cv::Scalar(0, 220, 220), 5);
+        }
+        else{
+            //白色
+            cv::polylines(image, pts, true, cv::Scalar(255, 255, 255), 2); 
+        }
+
+
 
 
         // 中心点 (黄色)
